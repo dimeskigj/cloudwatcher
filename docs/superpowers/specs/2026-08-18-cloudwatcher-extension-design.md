@@ -43,7 +43,7 @@ Warning settings affect presentation only. Detection and non-private summary cou
 
 ## Technical Approach
 
-Use a passive Manifest V3 `webRequest` monitor. The background entrypoint listens to `webRequest.onResponseStarted` with response headers enabled. On current Firefox and Chromium implementations, this event provides the response headers and, when available, the actual connected server IP without requiring a blocking listener.
+Use a passive Manifest V3 `webRequest` monitor. The background entrypoint registers a non-blocking `webRequest.onBeforeRequest` listener for main-frame navigation boundaries and a non-blocking `webRequest.onResponseStarted` listener with response headers enabled for classification. On current Firefox and Chromium implementations, the response event provides the response headers and, when available, the actual connected server IP without requiring a blocking listener.
 
 The implementation stack is:
 
@@ -51,7 +51,7 @@ The implementation stack is:
 - WXT for cross-browser entrypoints, development, and Firefox/Chromium builds.
 - Preact for the notice, popup, and options interfaces.
 - Pure TypeScript modules for classification, domain matching, navigation state, and storage schemas.
-- A bundled public-suffix implementation such as `tldts` for portable registrable-domain handling.
+- The bundled `tldts` public-suffix implementation for portable registrable-domain handling.
 
 WXT will generate browser-appropriate Manifest V3 background declarations from shared source. The extension will request only the permissions needed to observe responses, inject notices, store local state, inspect the active tab, and navigate back or to `about:blank`. Host access is limited to schemes the product supports: HTTP, HTTPS, WS, and WSS where the browser permits response observation.
 
@@ -83,7 +83,7 @@ Strong header evidence is case-insensitive and includes:
 - Presence of `cf-ray`.
 - Presence of `cf-cache-status`.
 - Presence of `cf-mitigated`.
-- A `server` value that identifies Cloudflare.
+- A normalized `server` value exactly equal to `cloudflare` or the historical `cloudflare-nginx` value.
 
 An IP match is positive when the connected IPv4 or IPv6 address belongs to an enabled CIDR. Header evidence and IP evidence are independent; either one is sufficient. Unknown `cf-*` headers are not treated as positive without being explicitly added to the classifier.
 
@@ -99,9 +99,9 @@ The navigation coordinator maintains a record keyed by tab and current network n
 - Whether each category has been counted.
 - Which notice, if any, was shown or dismissed for this navigation.
 
-The working cache is backed by `storage.session`, not persistent local storage. This allows state to survive Chromium service-worker suspension while disappearing when the browser session ends. A new main-frame network navigation replaces the previous record. Single-page-app history changes do not create a new count or re-arm a dismissed notice unless they cause a main-frame network navigation.
+The working cache is backed by `storage.session`, not persistent local storage. This allows state to survive Chromium service-worker suspension while disappearing when the browser session ends. A new main-frame request ID creates and replaces the navigation record. Repeated `onBeforeRequest` events with the same request ID during redirects or authentication update the expected top-level URL without resetting state. Single-page-app history changes do not create a new count or re-arm a dismissed notice unless they cause a main-frame network navigation.
 
-The content script performs a startup handshake. The background returns current notice state when detection happened before the content script was ready. Messages include enough navigation identity to prevent a late message from rendering on the next page.
+The content script performs a startup handshake with its current top-level URL. The background returns the current notice state and a generated navigation ID when detection happened before the content script was ready. The content script does not render push messages until that handshake completes, then accepts only messages with the same navigation ID and expected top-level URL. This also rejects stale messages when the same URL is reloaded into a new document.
 
 ### Content Notice
 
@@ -113,7 +113,7 @@ The content script contains presentation and interaction wiring only. It does no
 
 A single repository module wraps `storage.local` and `storage.session`. No UI or monitor code accesses storage directly. It provides typed reads, schema validation, migrations, canonical writes, and a serialized update queue.
 
-The queue prevents lost increments when multiple tabs update the same summary concurrently. Invalid stored entries are excluded from active use but preserved for recovery and reported in the options interface. A failed write leaves the previously stored value intact.
+The queue prevents lost increments when multiple tabs update the same summary concurrently. Invalid stored entries are excluded from active use, while their raw source remains untouched until the user explicitly repairs or resets that storage section. The options interface identifies the affected section and offers that recovery action. A failed write leaves the previously stored value intact.
 
 ### Popup And Options
 
@@ -139,7 +139,7 @@ If an unusual event ordering produces a content banner before direct detection, 
 
 ### Counting
 
-Persistent summaries are keyed by the visited page's registrable domain, not by resource domain. Each summary stores only:
+Persistent summaries are keyed by the visited page's registrable domain, not by resource domain. When a host has no registrable domain, as with `localhost` or an IP literal, its canonical exact hostname is the fallback key. Each summary stores only:
 
 ```ts
 type DomainSummary = {
@@ -149,7 +149,7 @@ type DomainSummary = {
 };
 ```
 
-Each counter increments at most once per main-frame network navigation. `lastSeenAt` is the latest positive detection in either category. Ignored sites and disabled warning modes still count. Private-window detections do not persist counts.
+Each counter increments at most once per main-frame network navigation. `lastSeenAt` is the ISO 8601 UTC timestamp of the latest positive detection in either category. Ignored sites and disabled warning modes still count. Private-window detections do not persist counts.
 
 ## IP Range Management
 
@@ -172,6 +172,8 @@ From a host such as `shop.example.co.uk`, the permanent-dismiss flow offers:
 
 Whole-site matching uses the bundled public-suffix data rather than assuming the last two labels form a registrable domain. Rules are stored as canonical lowercase ASCII hostnames with an explicit `host` or `site` scope. The options page displays human-readable labels and lets the user remove rules.
 
+For `localhost`, IP literals, and other hosts with no registrable domain, the permanent-dismiss flow offers only the exact-host rule.
+
 New ignore rules immediately close a matching visible notice. Removing a rule re-enables warnings on the next main-frame network navigation; it does not retroactively show a notice on an already loaded page.
 
 ## Notice Experience
@@ -190,11 +192,11 @@ The focused dialog says that Cloudflare was detected for the site and names the 
 - **Go back:** navigate to the previous history entry; if no usable entry exists or the operation fails, replace the tab with `about:blank`.
 - **Don't warn here again:** reveal the exact-host and whole-site choices before saving a rule and closing the notice.
 
-Escape is equivalent to **Continue once**. The overlay uses modal semantics, traps focus, restores focus when practical, prevents focus from reaching the page behind it, and exposes all controls to keyboard and assistive technology.
+Escape is equivalent to **Continue once**. The overlay uses modal semantics, traps focus, restores the previously focused page element when it is still connected, prevents focus from reaching the page behind it, and exposes all controls to keyboard and assistive technology.
 
 ### Banner
 
-The direct banner mode and default page-content warning use a fixed banner at the top of the viewport. It overlays rather than mutates or shifts the site's layout. It provides the same three actions and permanent-rule chooser as the overlay, but it does not block interaction with the rest of the page or steal focus when it appears.
+The direct banner mode and default page-content warning use a fixed banner at the top of the viewport. It overlays rather than mutates or shifts the site's layout. It provides the same three actions and permanent-rule chooser as the overlay, but it does not block interaction with the rest of the page or steal focus when it appears. Escape dismisses the banner only while focus is inside it, so Cloudwatcher does not capture unrelated page keystrokes.
 
 Direct copy identifies the current host. Content copy says the page loads content through Cloudflare and identifies the first detected resource hostname, never its full URL. Controls wrap into a readable stacked layout on narrow viewports.
 
@@ -269,7 +271,7 @@ The store listing and privacy documentation must explain the broad host permissi
 
 - Missing response headers or server IP: classify using the evidence that is available; do not fail the request.
 - Invalid user CIDRs: show line-level errors and preserve the active saved list.
-- Content-script messaging failure: retain tab state for handshake where possible; otherwise expose an unavailable status without repeated errors.
+- Content-script messaging failure: retain the session-backed tab state for a later handshake; if the destination cannot host a content script, expose an unavailable status without repeated errors.
 - Protected/browser page: do not inject; popup reports unavailable.
 - No usable browser history: replace the current tab with `about:blank`.
 - Local-storage write failure: keep prior data, report the operation failure, and allow retry.
@@ -332,7 +334,7 @@ Use mocked WebExtension events and storage to cover:
 
 - Local fixture pages emit controlled Cloudflare-like headers and load controlled subresources.
 - Chromium runs an automated unpacked-extension smoke suite.
-- Firefox runs the same acceptance scenarios with a temporary `web-ext` profile and passes `web-ext lint`.
+- Firefox runs the same release-blocking smoke matrix manually in a temporary `web-ext` profile and passes `web-ext lint`; the browser-independent behavior remains automated in unit, integration, and UI tests.
 - Type checking, linting, unit/integration/UI tests, and production builds run for both targets.
 - Generated manifests and packages are inspected for expected permissions, remote code, and unexpected network endpoints.
 
