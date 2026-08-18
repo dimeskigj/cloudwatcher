@@ -1,0 +1,41 @@
+{
+  "name": "cloudwatcher",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.9.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "wxt -b chrome --mv3",
+    "dev:firefox": "wxt -b firefox --mv3",
+    "prepare": "wxt prepare",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "wxt prepare && tsc --noEmit",
+    "build:chrome": "wxt build -b chrome --mv3",
+    "build:firefox": "wxt build -b firefox --mv3",
+    "build": "npm run build:chrome && npm run build:firefox"
+  },
+  "dependencies": {
+    "ipaddr.js": "^2.5.0",
+    "preact": "^10.29.8",
+    "tldts": "^7.4.10"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.9",
+    "@preact/preset-vite": "^2.10.6",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/preact": "^3.2.4",
+    "@testing-library/user-event": "^14.6.5",
+    "@types/node": "^26.2.0",
+    "axe-core": "^4.13.0",
+    "jsdom": "^29.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11",
+    "wxt": "^0.21.4"
+  }
+}
