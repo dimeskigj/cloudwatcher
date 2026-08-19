@@ -44,3 +44,18 @@ export interface DomainSummary {
   contentNavigations: number;
   lastSeenAt: string;
 }
+
+export type StorageSection = "settings" | "ignoreRules" | "ipRanges" | "summaries";
+
+export interface StorageDiagnostic {
+  section: StorageSection;
+  message: string;
+}
+
+export interface OptionsSnapshot {
+  settings: Settings;
+  ignoreRules: IgnoreRule[];
+  ipRanges: string[];
+  summaries: Record<string, DomainSummary>;
+  diagnostics: StorageDiagnostic[];
+}
