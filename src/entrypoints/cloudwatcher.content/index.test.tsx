@@ -40,6 +40,7 @@ const directNotice: NoticeState = {
   kind: "direct",
   mode: "overlay",
   siteHost: "shop.example.com",
+  registrableDomain: "example.com",
   evidence: [{ kind: "header", signal: "cf-ray" }],
   ignoreChoices: [
     {
@@ -71,6 +72,7 @@ const canonicalHostNotices: Array<{ label: string; notice: NoticeState }> = [
     notice: {
       ...directNotice,
       siteHost: "localhost",
+      registrableDomain: undefined,
       ignoreChoices: [{ label: "localhost only", rule: { scope: "host", value: "localhost" } }],
     },
   },
@@ -79,6 +81,7 @@ const canonicalHostNotices: Array<{ label: string; notice: NoticeState }> = [
     notice: {
       ...directNotice,
       siteHost: "203.0.113.7",
+      registrableDomain: undefined,
       ignoreChoices: [{ label: "203.0.113.7 only", rule: { scope: "host", value: "203.0.113.7" } }],
     },
   },
@@ -87,7 +90,38 @@ const canonicalHostNotices: Array<{ label: string; notice: NoticeState }> = [
     notice: {
       ...directNotice,
       siteHost: "2001:db8::1",
+      registrableDomain: undefined,
       ignoreChoices: [{ label: "2001:db8::1 only", rule: { scope: "host", value: "2001:db8::1" } }],
+    },
+  },
+  {
+    label: "apex domain",
+    notice: {
+      ...directNotice,
+      siteHost: "example.com",
+      registrableDomain: "example.com",
+      ignoreChoices: [
+        { label: "example.com only", rule: { scope: "host", value: "example.com" } },
+        {
+          label: "example.com and all subdomains",
+          rule: { scope: "site", value: "example.com" },
+        },
+      ],
+    },
+  },
+  {
+    label: "private-suffix apex",
+    notice: {
+      ...directNotice,
+      siteHost: "team.github.io",
+      registrableDomain: "team.github.io",
+      ignoreChoices: [
+        { label: "team.github.io only", rule: { scope: "host", value: "team.github.io" } },
+        {
+          label: "team.github.io and all subdomains",
+          rule: { scope: "site", value: "team.github.io" },
+        },
+      ],
     },
   },
 ];
@@ -191,6 +225,90 @@ const malformedNotices: Array<{ label: string; notice: unknown }> = [
       ...directNotice,
       ignoreChoices: [
         { label: "other.example.com only", rule: { scope: "host", value: "other.example.com" } },
+      ],
+    },
+  },
+  {
+    label: "site-only ignore choices",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [
+        {
+          label: "example.com and all subdomains",
+          rule: { scope: "site", value: "example.com" },
+        },
+      ],
+    },
+  },
+  {
+    label: "missing expected site choice",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [
+        { label: "shop.example.com only", rule: { scope: "host", value: "shop.example.com" } },
+      ],
+    },
+  },
+  {
+    label: "duplicate ignore choice",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [
+        ...directNotice.ignoreChoices,
+        { label: "shop.example.com only", rule: { scope: "host", value: "shop.example.com" } },
+      ],
+    },
+  },
+  {
+    label: "site choice without a registrable-domain field",
+    notice: { ...directNotice, registrableDomain: undefined },
+  },
+  {
+    label: "mismatched registrable-domain field",
+    notice: { ...directNotice, registrableDomain: "other.example.com" },
+  },
+  {
+    label: "localhost site choice",
+    notice: {
+      ...directNotice,
+      siteHost: "localhost",
+      registrableDomain: "localhost",
+      ignoreChoices: [
+        { label: "localhost only", rule: { scope: "host", value: "localhost" } },
+        {
+          label: "localhost and all subdomains",
+          rule: { scope: "site", value: "localhost" },
+        },
+      ],
+    },
+  },
+  {
+    label: "IPv4 site choice",
+    notice: {
+      ...directNotice,
+      siteHost: "203.0.113.7",
+      registrableDomain: "203.0.113.7",
+      ignoreChoices: [
+        { label: "203.0.113.7 only", rule: { scope: "host", value: "203.0.113.7" } },
+        {
+          label: "203.0.113.7 and all subdomains",
+          rule: { scope: "site", value: "203.0.113.7" },
+        },
+      ],
+    },
+  },
+  {
+    label: "IPv6 site choice",
+    notice: {
+      ...directNotice,
+      siteHost: "2001:db8::1",
+      registrableDomain: "2001:db8::1",
+      ignoreChoices: [
+        { label: "2001:db8::1 only", rule: { scope: "host", value: "2001:db8::1" } },
+        {
+          label: "2001:db8::1 and all subdomains",
+          rule: { scope: "site", value: "2001:db8::1" },
+        },
       ],
     },
   },

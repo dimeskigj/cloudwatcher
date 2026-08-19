@@ -1,7 +1,7 @@
 import { render } from "preact";
+import { canonicalizeHostname } from "@/core/hostname";
 import type { HandshakeData, RuntimePush, RuntimeRequest, RuntimeResponse } from "@/core/messages";
 import type { NoticeState } from "@/core/model";
-import { canonicalizeHostname } from "@/core/site-identity";
 import { Notice, type NoticeAction } from "./Notice";
 import noticeCss from "./notice.css?inline";
 
@@ -327,7 +327,11 @@ function isEvidence(value: unknown): boolean {
   return false;
 }
 
-function isIgnoreChoice(value: unknown, siteHost: string): boolean {
+function isIgnoreChoice(
+  value: unknown,
+  siteHost: string,
+  registrableDomain: string | undefined,
+): boolean {
   if (!isRecord(value) || !isRecord(value.rule) || !isCanonicalHostname(value.rule.value)) {
     return false;
   }
@@ -337,9 +341,43 @@ function isIgnoreChoice(value: unknown, siteHost: string): boolean {
   }
   return (
     value.rule.scope === "site" &&
-    (siteHost === value.rule.value || siteHost.endsWith(`.${value.rule.value}`)) &&
+    value.rule.value === registrableDomain &&
     value.label === `${value.rule.value} and all subdomains`
   );
+}
+
+function isRegistrableDomain(value: unknown, siteHost: string): value is string {
+  return (
+    isCanonicalHostname(value) &&
+    value.includes(".") &&
+    !value.includes(":") &&
+    !/^\d+(?:\.\d+){3}$/.test(value) &&
+    (siteHost === value || siteHost.endsWith(`.${value}`))
+  );
+}
+
+function isIgnoreChoiceSet(
+  value: unknown,
+  siteHost: string,
+  registrableDomain: string | undefined,
+): boolean {
+  if (!Array.isArray(value) || value.length !== (registrableDomain === undefined ? 1 : 2)) {
+    return false;
+  }
+
+  let hostChoices = 0;
+  let siteChoices = 0;
+  for (const choice of Array.from(value)) {
+    if (!isIgnoreChoice(choice, siteHost, registrableDomain) || !isRecord(choice.rule)) {
+      return false;
+    }
+    if (choice.rule.scope === "host") {
+      hostChoices += 1;
+    } else {
+      siteChoices += 1;
+    }
+  }
+  return hostChoices === 1 && siteChoices === (registrableDomain === undefined ? 0 : 1);
 }
 
 function isNoticeState(value: unknown): value is NoticeState {
@@ -348,14 +386,14 @@ function isNoticeState(value: unknown): value is NoticeState {
   }
 
   const siteHost = value.siteHost;
+  const registrableDomain = value.registrableDomain;
   if (
     !isNonEmptyString(value.navigationId) ||
     !isCanonicalHostname(siteHost) ||
+    (registrableDomain !== undefined && !isRegistrableDomain(registrableDomain, siteHost)) ||
     !Array.isArray(value.evidence) ||
     !Array.from(value.evidence).every(isEvidence) ||
-    !Array.isArray(value.ignoreChoices) ||
-    value.ignoreChoices.length === 0 ||
-    !Array.from(value.ignoreChoices).every((choice) => isIgnoreChoice(choice, siteHost))
+    !isIgnoreChoiceSet(value.ignoreChoices, siteHost, registrableDomain)
   ) {
     return false;
   }

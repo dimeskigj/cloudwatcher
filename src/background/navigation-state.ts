@@ -136,6 +136,9 @@ export function deriveNotice(
       kind: "direct",
       mode: settings.directNoticeMode,
       siteHost: state.identity.hostname,
+      ...(state.identity.registrableDomain === undefined
+        ? {}
+        : { registrableDomain: state.identity.registrableDomain }),
       evidence: state.direct.match.evidence,
       ignoreChoices: getIgnoreChoices(state.identity),
     };
@@ -155,6 +158,9 @@ export function deriveNotice(
     kind: "content",
     mode: "banner",
     siteHost: state.identity.hostname,
+    ...(state.identity.registrableDomain === undefined
+      ? {}
+      : { registrableDomain: state.identity.registrableDomain }),
     resourceHost: state.content.resourceHost,
     evidence: state.content.match.evidence,
     ignoreChoices: getIgnoreChoices(state.identity),

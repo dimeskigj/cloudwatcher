@@ -17,6 +17,7 @@ const directNotice: NoticeState = {
   kind: "direct",
   mode: "overlay",
   siteHost: "shop.example.com",
+  registrableDomain: "example.com",
   evidence: [
     { kind: "header", signal: "cf-ray" },
     { kind: "ip", ip: "203.0.113.7", cidr: "203.0.113.0/24" },
@@ -276,16 +277,25 @@ describe("Notice keyboard behavior", () => {
       const user = userEvent.setup();
       const pageButton = addPageButton();
       const onAction = resolvedAction();
+      const pageKeydown = vi.fn();
+      document.addEventListener("keydown", pageKeydown);
       render(<Notice notice={notice} onAction={onAction} />);
 
-      expect(pageButton).toHaveFocus();
-      await user.keyboard("{Escape}");
-      expect(onAction).not.toHaveBeenCalled();
+      try {
+        expect(pageButton).toHaveFocus();
+        await user.keyboard("{Escape}");
+        expect(onAction).not.toHaveBeenCalled();
+        expect(pageKeydown).toHaveBeenCalledOnce();
+        pageKeydown.mockClear();
 
-      screen.getByRole("button", { name: "Go back" }).focus();
-      await user.keyboard("{Escape}");
-      expect(onAction).toHaveBeenCalledOnce();
-      expect(onAction).toHaveBeenCalledWith({ type: "continue" });
+        screen.getByRole("button", { name: "Go back" }).focus();
+        await user.keyboard("{Escape}");
+        expect(onAction).toHaveBeenCalledOnce();
+        expect(onAction).toHaveBeenCalledWith({ type: "continue" });
+        expect(pageKeydown).not.toHaveBeenCalled();
+      } finally {
+        document.removeEventListener("keydown", pageKeydown);
+      }
     },
   );
 
@@ -372,13 +382,17 @@ describe("Notice keyboard behavior", () => {
     }
   });
 
-  it("runs overlay pointer and click actions without bubbling composed events to the page", async () => {
+  it("runs overlay pointer, compatibility mouse, and click actions without page bubbling", async () => {
     const user = userEvent.setup();
     const onAction = resolvedAction();
     const pageClick = vi.fn();
+    const pageMouseDown = vi.fn();
+    const pageMouseUp = vi.fn();
     const pagePointerDown = vi.fn();
     const pagePointerUp = vi.fn();
     document.addEventListener("click", pageClick);
+    document.addEventListener("mousedown", pageMouseDown);
+    document.addEventListener("mouseup", pageMouseUp);
     document.addEventListener("pointerdown", pagePointerDown);
     document.addEventListener("pointerup", pagePointerUp);
 
@@ -389,32 +403,95 @@ describe("Notice keyboard behavior", () => {
       expect(onAction).toHaveBeenCalledWith({ type: "continue" });
       expect(pagePointerDown).not.toHaveBeenCalled();
       expect(pagePointerUp).not.toHaveBeenCalled();
+      expect(pageMouseDown).not.toHaveBeenCalled();
+      expect(pageMouseUp).not.toHaveBeenCalled();
       expect(pageClick).not.toHaveBeenCalled();
     } finally {
       document.removeEventListener("click", pageClick);
+      document.removeEventListener("mousedown", pageMouseDown);
+      document.removeEventListener("mouseup", pageMouseUp);
       document.removeEventListener("pointerdown", pagePointerDown);
       document.removeEventListener("pointerup", pagePointerUp);
     }
   });
 
-  it("keeps direct-banner pointer and click actions non-modal", async () => {
+  it("stops scrim and panel bubble events without canceling browser defaults", () => {
+    const pageEvents = vi.fn();
+    const eventTypes = [
+      "keydown",
+      "keyup",
+      "click",
+      "pointerdown",
+      "pointerup",
+      "mousedown",
+      "mouseup",
+      "wheel",
+    ] as const;
+    for (const type of eventTypes) {
+      document.addEventListener(type, pageEvents);
+    }
+
+    try {
+      const { container } = render(<Notice notice={directNotice} onAction={resolvedAction()} />);
+      const scrim = container.querySelector<HTMLElement>(".notice");
+      const panel = screen.getByRole("dialog");
+      if (scrim === null) {
+        throw new Error("Expected the overlay scrim");
+      }
+
+      for (const target of [scrim, panel]) {
+        for (const type of eventTypes) {
+          const event = new Event(type, { bubbles: true, cancelable: true, composed: true });
+          target.dispatchEvent(event);
+          expect(event.defaultPrevented, `${type} default on ${target.className}`).toBe(false);
+        }
+      }
+      expect(pageEvents).not.toHaveBeenCalled();
+    } finally {
+      for (const type of eventTypes) {
+        document.removeEventListener(type, pageEvents);
+      }
+    }
+  });
+
+  it("keeps non-Escape direct-banner events and actions non-modal", async () => {
     const user = userEvent.setup();
     const onAction = resolvedAction();
-    const pageClick = vi.fn();
-    const pagePointerDown = vi.fn();
-    document.addEventListener("click", pageClick);
-    document.addEventListener("pointerdown", pagePointerDown);
+    const pageEvents = vi.fn<(event: Event) => void>();
+    const eventTypes = [
+      "keydown",
+      "keyup",
+      "click",
+      "pointerdown",
+      "pointerup",
+      "mousedown",
+      "mouseup",
+      "wheel",
+    ] as const;
+    for (const type of eventTypes) {
+      document.addEventListener(type, pageEvents);
+    }
 
     try {
       render(<Notice notice={directBannerNotice} onAction={onAction} />);
-      await user.click(screen.getByRole("button", { name: "Continue once" }));
+      const continueButton = screen.getByRole("button", { name: "Continue once" });
+      await user.click(continueButton);
+      continueButton.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      );
+      continueButton.dispatchEvent(
+        new KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true, cancelable: true }),
+      );
+      continueButton.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true }));
 
       expect(onAction).toHaveBeenCalledWith({ type: "continue" });
-      expect(pagePointerDown).toHaveBeenCalled();
-      expect(pageClick).toHaveBeenCalled();
+      expect(new Set(pageEvents.mock.calls.map(([event]) => event.type))).toEqual(
+        new Set(eventTypes),
+      );
     } finally {
-      document.removeEventListener("click", pageClick);
-      document.removeEventListener("pointerdown", pagePointerDown);
+      for (const type of eventTypes) {
+        document.removeEventListener(type, pageEvents);
+      }
     }
   });
 });

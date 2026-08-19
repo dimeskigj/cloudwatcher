@@ -144,6 +144,7 @@ describe("navigation state", () => {
       kind: "content",
       mode: "banner",
       siteHost: "shop.example.com",
+      registrableDomain: "example.com",
       resourceHost: "cdn.example",
       evidence: headerMatch.evidence,
       ignoreChoices: [
@@ -190,8 +191,32 @@ describe("navigation state", () => {
       kind: "direct",
       mode: "overlay",
       siteHost: "shop.example.com",
+      registrableDomain: "example.com",
       evidence: ipMatch.evidence,
       ignoreChoices: expect.any(Array),
+    });
+  });
+
+  it.each([
+    ["apex domain", "https://example.com/", "example.com"],
+    ["private-suffix apex", "https://team.github.io/", "team.github.io"],
+  ])("derives the exact registrable domain for an %s notice", (_label, url, domain) => {
+    const detected = applyDetection(start({ url }), "direct", headerMatch).state;
+
+    expect(deriveNotice(detected)).toEqual({
+      navigationId: "nav-1",
+      kind: "direct",
+      mode: "overlay",
+      siteHost: domain,
+      registrableDomain: domain,
+      evidence: headerMatch.evidence,
+      ignoreChoices: [
+        { label: `${domain} only`, rule: { scope: "host", value: domain } },
+        {
+          label: `${domain} and all subdomains`,
+          rule: { scope: "site", value: domain },
+        },
+      ],
     });
   });
 

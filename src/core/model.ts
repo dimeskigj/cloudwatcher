@@ -61,6 +61,7 @@ export interface NoticeState {
   kind: DetectionCategory;
   mode: "overlay" | "banner";
   siteHost: string;
+  registrableDomain?: string;
   resourceHost?: string;
   evidence: DetectionEvidence[];
   ignoreChoices: IgnoreChoice[];

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
 import type { DetectionEvidence, IgnoreRule, NoticeState } from "../../core/model";
 
 export type NoticeAction =
@@ -13,6 +13,16 @@ interface NoticeProps {
 
 const ERROR_MESSAGE = "Cloudwatcher could not save that choice. Try again.";
 const FOCUSABLE_SELECTOR = "button:not([disabled]), [href], [tabindex]:not([tabindex='-1'])";
+const OVERLAY_BUBBLE_EVENTS = [
+  "keydown",
+  "keyup",
+  "click",
+  "pointerdown",
+  "pointerup",
+  "mousedown",
+  "mouseup",
+  "wheel",
+] as const;
 
 const HEADER_EVIDENCE_LABELS: Record<
   Extract<DetectionEvidence, { kind: "header" }>["signal"],
@@ -54,6 +64,7 @@ export function Notice({ notice, onAction }: NoticeProps) {
   const headingId = useId();
   const descriptionId = useId();
   const chooserId = useId();
+  const noticeRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const continueRef = useRef<HTMLButtonElement>(null);
   const ignoreRef = useRef<HTMLButtonElement>(null);
@@ -71,6 +82,28 @@ export function Notice({ notice, onAction }: NoticeProps) {
     notice.kind === "direct"
       ? "Cloudwatcher observed a Cloudflare signal while this site loaded."
       : "Cloudwatcher observed a Cloudflare signal in content loaded by this page.";
+
+  useLayoutEffect(() => {
+    if (!isOverlay) {
+      return;
+    }
+
+    const noticeElement = noticeRef.current;
+    if (noticeElement === null) {
+      return;
+    }
+
+    const stopPageBubble = (event: Event) => event.stopPropagation();
+    for (const type of OVERLAY_BUBBLE_EVENTS) {
+      noticeElement.addEventListener(type, stopPageBubble);
+    }
+
+    return () => {
+      for (const type of OVERLAY_BUBBLE_EVENTS) {
+        noticeElement.removeEventListener(type, stopPageBubble);
+      }
+    };
+  }, [isOverlay]);
 
   useEffect(() => {
     if (!isOverlay) {
@@ -121,10 +154,6 @@ export function Notice({ notice, onAction }: NoticeProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
-    if (isOverlay) {
-      event.stopPropagation();
-    }
-
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -163,18 +192,12 @@ export function Notice({ notice, onAction }: NoticeProps) {
     }
   }
 
-  function handleComposedEvent(event: Event): void {
-    if (isOverlay) {
-      event.stopPropagation();
-    }
-  }
-
   const panelProps = isOverlay
     ? ({ role: "dialog", "aria-modal": "true" } as const)
     : ({ role: "region" } as const);
 
   return (
-    <div class={`notice notice--${notice.mode}`}>
+    <div ref={noticeRef} class={`notice notice--${notice.mode}`}>
       <section
         {...panelProps}
         ref={panelRef}
@@ -183,10 +206,7 @@ export function Notice({ notice, onAction }: NoticeProps) {
         aria-describedby={descriptionId}
         aria-busy={pending ? "true" : "false"}
         data-error={hasError ? "true" : "false"}
-        onClick={handleComposedEvent}
         onKeyDown={handleKeyDown}
-        onPointerDown={handleComposedEvent}
-        onPointerUp={handleComposedEvent}
         tabIndex={-1}
       >
         <div class="notice__identity">
