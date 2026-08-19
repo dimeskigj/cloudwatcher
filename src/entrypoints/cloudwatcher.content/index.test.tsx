@@ -65,6 +65,33 @@ const directBannerNotice: NoticeState = {
   mode: "banner",
 };
 
+const canonicalHostNotices: Array<{ label: string; notice: NoticeState }> = [
+  {
+    label: "localhost",
+    notice: {
+      ...directNotice,
+      siteHost: "localhost",
+      ignoreChoices: [{ label: "localhost only", rule: { scope: "host", value: "localhost" } }],
+    },
+  },
+  {
+    label: "IPv4",
+    notice: {
+      ...directNotice,
+      siteHost: "203.0.113.7",
+      ignoreChoices: [{ label: "203.0.113.7 only", rule: { scope: "host", value: "203.0.113.7" } }],
+    },
+  },
+  {
+    label: "IPv6",
+    notice: {
+      ...directNotice,
+      siteHost: "2001:db8::1",
+      ignoreChoices: [{ label: "2001:db8::1 only", rule: { scope: "host", value: "2001:db8::1" } }],
+    },
+  },
+];
+
 function sparseArray(): unknown[] {
   const values: unknown[] = [];
   values.length = 1;
@@ -85,7 +112,19 @@ const malformedNotices: Array<{ label: string; notice: unknown }> = [
   },
   { label: "empty navigation ID", notice: { ...directNotice, navigationId: "" } },
   { label: "empty site host", notice: { ...directNotice, siteHost: "" } },
+  {
+    label: "URL-shaped site host",
+    notice: { ...directNotice, siteHost: "https://shop.example.com/private" },
+  },
+  {
+    label: "non-canonical site host",
+    notice: { ...directNotice, siteHost: "SHOP.EXAMPLE.COM." },
+  },
   { label: "non-string resource host", notice: { ...contentNotice, resourceHost: 7 } },
+  {
+    label: "path-shaped resource host",
+    notice: { ...contentNotice, resourceHost: "cdn.example.net/private" },
+  },
   { label: "non-array evidence", notice: { ...directNotice, evidence: {} } },
   { label: "sparse evidence", notice: { ...directNotice, evidence: sparseArray() } },
   {
@@ -97,6 +136,7 @@ const malformedNotices: Array<{ label: string; notice: unknown }> = [
     notice: { ...directNotice, evidence: [{ kind: "ip", ip: "203.0.113.7" }] },
   },
   { label: "non-array ignore choices", notice: { ...directNotice, ignoreChoices: {} } },
+  { label: "empty ignore choices", notice: { ...directNotice, ignoreChoices: [] } },
   {
     label: "sparse ignore choices",
     notice: { ...directNotice, ignoreChoices: sparseArray() },
@@ -122,6 +162,36 @@ const malformedNotices: Array<{ label: string; notice: unknown }> = [
     notice: {
       ...directNotice,
       ignoreChoices: [{ label: "shop.example.com only", rule: { scope: "host", value: "" } }],
+    },
+  },
+  {
+    label: "path-shaped ignore value",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [
+        {
+          label: "shop.example.com/private only",
+          rule: { scope: "host", value: "shop.example.com/private" },
+        },
+      ],
+    },
+  },
+  {
+    label: "misleading ignore label",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [
+        { label: "example.com only", rule: { scope: "host", value: "shop.example.com" } },
+      ],
+    },
+  },
+  {
+    label: "ignore rule for another host",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [
+        { label: "other.example.com only", rule: { scope: "host", value: "other.example.com" } },
+      ],
     },
   },
 ];
@@ -368,6 +438,110 @@ describe("content script definition", () => {
     }
   });
 
+  it("reattaches the retained overlay host whenever the page removes it", async () => {
+    const invalidate = startDefaultRuntime({
+      navigationId: "nav-current",
+      notice: directNotice,
+    });
+
+    try {
+      await waitFor(() => expect(document.querySelectorAll("cloudwatcher-notice")).toHaveLength(1));
+      const host = document.querySelector<HTMLElement>("cloudwatcher-notice");
+      if (host === null) {
+        throw new Error("Expected the overlay host to be mounted");
+      }
+
+      host.remove();
+      await waitFor(() => expect(host.parentElement).toBe(document.documentElement));
+
+      host.remove();
+      await waitFor(() => expect(host.parentElement).toBe(document.documentElement));
+      expect(Array.from(document.querySelectorAll("cloudwatcher-notice"))).toEqual([host]);
+    } finally {
+      invalidate();
+    }
+  });
+
+  it("moves the retained overlay host back under html after relocation and body replacement", async () => {
+    const invalidate = startDefaultRuntime({
+      navigationId: "nav-current",
+      notice: directNotice,
+    });
+
+    try {
+      await waitFor(() => expect(document.querySelectorAll("cloudwatcher-notice")).toHaveLength(1));
+      const host = document.querySelector<HTMLElement>("cloudwatcher-notice");
+      if (host === null) {
+        throw new Error("Expected the overlay host to be mounted");
+      }
+
+      document.body.append(host);
+      await waitFor(() => expect(host.parentElement).toBe(document.documentElement));
+
+      const replacementBody = document.createElement("body");
+      document.body.replaceWith(replacementBody);
+      replacementBody.append(host);
+
+      await waitFor(() => expect(host.parentElement).toBe(document.documentElement));
+      expect(Array.from(document.querySelectorAll("cloudwatcher-notice"))).toEqual([host]);
+    } finally {
+      invalidate();
+    }
+  });
+
+  it("restores page-owned inert and scroll mutations made while the overlay is active", async () => {
+    const head = document.head;
+    const body = document.body;
+    head.setAttribute("inert", "before-overlay");
+    const invalidate = startDefaultRuntime({
+      navigationId: "nav-current",
+      notice: directNotice,
+    });
+
+    try {
+      await waitFor(() => {
+        expect(body).toHaveAttribute("inert");
+        expect(body.style.getPropertyValue("overflow")).toBe("hidden");
+        expect(document.documentElement.style.getPropertyValue("overflow")).toBe("hidden");
+      });
+
+      head.removeAttribute("inert");
+      body.setAttribute("inert", "page-owned");
+      body.style.setProperty("overflow", "clip");
+      body.style.setProperty("overscroll-behavior", "contain", "important");
+      document.documentElement.style.setProperty("overflow", "auto");
+      document.documentElement.style.setProperty("overscroll-behavior", "contain");
+
+      await waitFor(() => {
+        expect(head).toHaveAttribute("inert");
+        expect(body.style.getPropertyValue("overflow")).toBe("hidden");
+        expect(body.style.getPropertyValue("overscroll-behavior")).toBe("none");
+        expect(document.documentElement.style.getPropertyValue("overflow")).toBe("hidden");
+        expect(document.documentElement.style.getPropertyValue("overscroll-behavior")).toBe("none");
+      });
+
+      invalidate();
+
+      expect(head).not.toHaveAttribute("inert");
+      expect(body.getAttribute("inert")).toBe("page-owned");
+      expect(body.style.getPropertyValue("overflow")).toBe("clip");
+      expect(body.style.getPropertyValue("overscroll-behavior")).toBe("contain");
+      expect(body.style.getPropertyPriority("overscroll-behavior")).toBe("important");
+      expect(document.documentElement.style.getPropertyValue("overflow")).toBe("auto");
+      expect(document.documentElement.style.getPropertyValue("overscroll-behavior")).toBe(
+        "contain",
+      );
+    } finally {
+      invalidate();
+      head.removeAttribute("inert");
+      body.removeAttribute("inert");
+      body.style.removeProperty("overflow");
+      body.style.removeProperty("overscroll-behavior");
+      document.documentElement.style.removeProperty("overflow");
+      document.documentElement.style.removeProperty("overscroll-behavior");
+    }
+  });
+
   it("leaves page interactivity, scroll styles, and focus untouched for a direct banner", async () => {
     const pageButton = document.createElement("button");
     pageButton.textContent = "Page control";
@@ -544,6 +718,21 @@ describe("createNoticeRuntime", () => {
       expect(harness.renderNotice).not.toHaveBeenCalled();
     },
   );
+
+  it.each(canonicalHostNotices)("accepts a canonical $label host", async ({ notice }) => {
+    const harness = createHarness(
+      Promise.resolve(success({ navigationId: "nav-current", notice })),
+    );
+
+    await harness.runtime.start();
+
+    expect(harness.renderNotice).toHaveBeenCalledOnce();
+    expect(harness.renderNotice).toHaveBeenCalledWith(
+      expect.any(Object),
+      notice,
+      expect.any(Function),
+    );
+  });
 
   it("ignores malformed and version-skewed pushes without throwing, then accepts a valid push", async () => {
     const harness = createHarness(

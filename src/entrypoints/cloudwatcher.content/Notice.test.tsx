@@ -351,17 +351,71 @@ describe("Notice keyboard behavior", () => {
   it("preserves native Enter and Space activation inside the overlay", async () => {
     const user = userEvent.setup();
     const onAction = resolvedAction();
-    render(<Notice notice={directNotice} onAction={onAction} />);
-    const continueButton = screen.getByRole("button", { name: "Continue once" });
-    const goBackButton = screen.getByRole("button", { name: "Go back" });
+    const pageKeydown = vi.fn();
+    document.addEventListener("keydown", pageKeydown);
 
-    await waitFor(() => expect(continueButton).toHaveFocus());
-    await user.keyboard("{Enter}");
-    goBackButton.focus();
-    await user.keyboard("[Space]");
+    try {
+      render(<Notice notice={directNotice} onAction={onAction} />);
+      const continueButton = screen.getByRole("button", { name: "Continue once" });
+      const goBackButton = screen.getByRole("button", { name: "Go back" });
 
-    expect(onAction).toHaveBeenNthCalledWith(1, { type: "continue" });
-    expect(onAction).toHaveBeenNthCalledWith(2, { type: "leave" });
+      await waitFor(() => expect(continueButton).toHaveFocus());
+      await user.keyboard("{Enter}");
+      goBackButton.focus();
+      await user.keyboard("[Space]");
+
+      expect(onAction).toHaveBeenNthCalledWith(1, { type: "continue" });
+      expect(onAction).toHaveBeenNthCalledWith(2, { type: "leave" });
+      expect(pageKeydown).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("keydown", pageKeydown);
+    }
+  });
+
+  it("runs overlay pointer and click actions without bubbling composed events to the page", async () => {
+    const user = userEvent.setup();
+    const onAction = resolvedAction();
+    const pageClick = vi.fn();
+    const pagePointerDown = vi.fn();
+    const pagePointerUp = vi.fn();
+    document.addEventListener("click", pageClick);
+    document.addEventListener("pointerdown", pagePointerDown);
+    document.addEventListener("pointerup", pagePointerUp);
+
+    try {
+      render(<Notice notice={directNotice} onAction={onAction} />);
+      await user.click(screen.getByRole("button", { name: "Continue once" }));
+
+      expect(onAction).toHaveBeenCalledWith({ type: "continue" });
+      expect(pagePointerDown).not.toHaveBeenCalled();
+      expect(pagePointerUp).not.toHaveBeenCalled();
+      expect(pageClick).not.toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("click", pageClick);
+      document.removeEventListener("pointerdown", pagePointerDown);
+      document.removeEventListener("pointerup", pagePointerUp);
+    }
+  });
+
+  it("keeps direct-banner pointer and click actions non-modal", async () => {
+    const user = userEvent.setup();
+    const onAction = resolvedAction();
+    const pageClick = vi.fn();
+    const pagePointerDown = vi.fn();
+    document.addEventListener("click", pageClick);
+    document.addEventListener("pointerdown", pagePointerDown);
+
+    try {
+      render(<Notice notice={directBannerNotice} onAction={onAction} />);
+      await user.click(screen.getByRole("button", { name: "Continue once" }));
+
+      expect(onAction).toHaveBeenCalledWith({ type: "continue" });
+      expect(pagePointerDown).toHaveBeenCalled();
+      expect(pageClick).toHaveBeenCalled();
+    } finally {
+      document.removeEventListener("click", pageClick);
+      document.removeEventListener("pointerdown", pagePointerDown);
+    }
   });
 });
 

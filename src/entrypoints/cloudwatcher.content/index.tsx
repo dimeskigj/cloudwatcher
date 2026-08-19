@@ -1,6 +1,7 @@
 import { render } from "preact";
 import type { HandshakeData, RuntimePush, RuntimeRequest, RuntimeResponse } from "@/core/messages";
 import type { NoticeState } from "@/core/model";
+import { canonicalizeHostname } from "@/core/site-identity";
 import { Notice, type NoticeAction } from "./Notice";
 import noticeCss from "./notice.css?inline";
 
@@ -60,6 +61,10 @@ function readInlineStyle(element: HTMLElement, property: string): InlineStyleSta
   };
 }
 
+function inlineStylesEqual(left: InlineStyleState, right: InlineStyleState): boolean {
+  return left.value === right.value && left.priority === right.priority;
+}
+
 function restoreInlineStyle(element: HTMLElement, property: string, state: InlineStyleState): void {
   if (state.value === "") {
     element.style.removeProperty(property);
@@ -85,6 +90,7 @@ function lockScroll(element: HTMLElement): void {
 
 function createOverlayPageGuard(targetDocument: Document, host: HTMLElement): () => void {
   const documentElement = targetDocument.documentElement;
+  const styleProbe = targetDocument.createElement("div");
   const documentStyle = {
     hadAttribute: documentElement.hasAttribute("style"),
     overflow: readInlineStyle(documentElement, "overflow"),
@@ -92,6 +98,90 @@ function createOverlayPageGuard(targetDocument: Document, host: HTMLElement): ()
   };
   const elementStates = new Map<HTMLElement, PageElementState>();
   let released = false;
+
+  function readRecordedStyle(serializedStyle: string | null, property: string): InlineStyleState {
+    if (serializedStyle === null) {
+      styleProbe.removeAttribute("style");
+    } else {
+      styleProbe.setAttribute("style", serializedStyle);
+    }
+    return readInlineStyle(styleProbe, property);
+  }
+
+  function recordChangedProperty(
+    oldValues: Array<string | null>,
+    currentValue: string | null,
+    property: string,
+  ): boolean {
+    const values = [...oldValues, currentValue];
+    return values
+      .slice(1)
+      .some(
+        (value, index) =>
+          !inlineStylesEqual(
+            readRecordedStyle(values[index] ?? null, property),
+            readRecordedStyle(value, property),
+          ),
+      );
+  }
+
+  function updatePageState(records: MutationRecord[]): void {
+    const inertTargets = new Set<HTMLElement>();
+    const styleOldValues = new Map<HTMLElement, Array<string | null>>();
+
+    for (const record of records) {
+      if (record.type !== "attributes" || !(record.target instanceof HTMLElement)) {
+        continue;
+      }
+      if (record.attributeName === "inert") {
+        inertTargets.add(record.target);
+      } else if (record.attributeName === "style") {
+        const oldValues = styleOldValues.get(record.target) ?? [];
+        oldValues.push(record.oldValue);
+        styleOldValues.set(record.target, oldValues);
+      }
+    }
+
+    for (const element of inertTargets) {
+      const state = elementStates.get(element);
+      if (state !== undefined) {
+        state.inertAttribute = element.getAttribute("inert");
+        state.inertProperty = "inert" in element ? element.inert : undefined;
+      }
+    }
+
+    for (const [element, oldValues] of styleOldValues) {
+      const currentValue = element.getAttribute("style");
+      const overflowChanged = recordChangedProperty(oldValues, currentValue, "overflow");
+      const overscrollChanged = recordChangedProperty(
+        oldValues,
+        currentValue,
+        "overscroll-behavior",
+      );
+
+      if (element === documentElement) {
+        documentStyle.hadAttribute = element.hasAttribute("style");
+        if (overflowChanged) {
+          documentStyle.overflow = readInlineStyle(element, "overflow");
+        }
+        if (overscrollChanged) {
+          documentStyle.overscrollBehavior = readInlineStyle(element, "overscroll-behavior");
+        }
+        continue;
+      }
+
+      const state = elementStates.get(element);
+      if (state?.overflow !== undefined && state.overscrollBehavior !== undefined) {
+        state.hadStyleAttribute = element.hasAttribute("style");
+        if (overflowChanged) {
+          state.overflow = readInlineStyle(element, "overflow");
+        }
+        if (overscrollChanged) {
+          state.overscrollBehavior = readInlineStyle(element, "overscroll-behavior");
+        }
+      }
+    }
+  }
 
   function restoreElement(element: HTMLElement, state: PageElementState): void {
     if (state.inertProperty !== undefined) {
@@ -129,6 +219,7 @@ function createOverlayPageGuard(targetDocument: Document, host: HTMLElement): ()
       elementStates.set(element, state);
       observer.observe(element, {
         attributes: true,
+        attributeOldValue: true,
         attributeFilter: locksScroll ? ["inert", "style"] : ["inert"],
       });
     }
@@ -149,6 +240,9 @@ function createOverlayPageGuard(targetDocument: Document, host: HTMLElement): ()
       return;
     }
 
+    if (host.parentElement !== documentElement) {
+      documentElement.append(host);
+    }
     lockScroll(documentElement);
     for (const [element, state] of elementStates) {
       if (element.parentElement !== documentElement || element === host) {
@@ -164,19 +258,26 @@ function createOverlayPageGuard(targetDocument: Document, host: HTMLElement): ()
   }
 
   const Observer = targetDocument.defaultView?.MutationObserver ?? MutationObserver;
-  const observer = new Observer(reconcile);
+  const observer = new Observer((records) => {
+    updatePageState(records);
+    reconcile();
+    observer.takeRecords();
+  });
   observer.observe(documentElement, {
     childList: true,
     attributes: true,
+    attributeOldValue: true,
     attributeFilter: ["style"],
   });
   reconcile();
+  observer.takeRecords();
 
   return () => {
     if (released) {
       return;
     }
 
+    updatePageState(observer.takeRecords());
     released = true;
     observer.disconnect();
     for (const [element, state] of elementStates) {
@@ -201,6 +302,18 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isCanonicalHostname(value: unknown): value is string {
+  if (!isNonEmptyString(value)) {
+    return false;
+  }
+
+  try {
+    return canonicalizeHostname(value) === value;
+  } catch {
+    return false;
+  }
+}
+
 function isEvidence(value: unknown): boolean {
   if (!isRecord(value)) {
     return false;
@@ -214,25 +327,35 @@ function isEvidence(value: unknown): boolean {
   return false;
 }
 
-function isIgnoreChoice(value: unknown): boolean {
-  if (!isRecord(value) || !isNonEmptyString(value.label) || !isRecord(value.rule)) {
+function isIgnoreChoice(value: unknown, siteHost: string): boolean {
+  if (!isRecord(value) || !isRecord(value.rule) || !isCanonicalHostname(value.rule.value)) {
     return false;
   }
+
+  if (value.rule.scope === "host") {
+    return value.rule.value === siteHost && value.label === `${value.rule.value} only`;
+  }
   return (
-    (value.rule.scope === "host" || value.rule.scope === "site") &&
-    isNonEmptyString(value.rule.value)
+    value.rule.scope === "site" &&
+    (siteHost === value.rule.value || siteHost.endsWith(`.${value.rule.value}`)) &&
+    value.label === `${value.rule.value} and all subdomains`
   );
 }
 
 function isNoticeState(value: unknown): value is NoticeState {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const siteHost = value.siteHost;
   if (
-    !isRecord(value) ||
     !isNonEmptyString(value.navigationId) ||
-    !isNonEmptyString(value.siteHost) ||
+    !isCanonicalHostname(siteHost) ||
     !Array.isArray(value.evidence) ||
     !Array.from(value.evidence).every(isEvidence) ||
     !Array.isArray(value.ignoreChoices) ||
-    !Array.from(value.ignoreChoices).every(isIgnoreChoice)
+    value.ignoreChoices.length === 0 ||
+    !Array.from(value.ignoreChoices).every((choice) => isIgnoreChoice(choice, siteHost))
   ) {
     return false;
   }
@@ -240,11 +363,11 @@ function isNoticeState(value: unknown): value is NoticeState {
   if (value.kind === "direct") {
     return (
       (value.mode === "overlay" || value.mode === "banner") &&
-      (value.resourceHost === undefined || isNonEmptyString(value.resourceHost))
+      (value.resourceHost === undefined || isCanonicalHostname(value.resourceHost))
     );
   }
   return (
-    value.kind === "content" && value.mode === "banner" && isNonEmptyString(value.resourceHost)
+    value.kind === "content" && value.mode === "banner" && isCanonicalHostname(value.resourceHost)
   );
 }
 

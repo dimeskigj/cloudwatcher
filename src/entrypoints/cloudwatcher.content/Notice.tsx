@@ -121,6 +121,10 @@ export function Notice({ notice, onAction }: NoticeProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
+    if (isOverlay) {
+      event.stopPropagation();
+    }
+
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -159,6 +163,12 @@ export function Notice({ notice, onAction }: NoticeProps) {
     }
   }
 
+  function handleComposedEvent(event: Event): void {
+    if (isOverlay) {
+      event.stopPropagation();
+    }
+  }
+
   const panelProps = isOverlay
     ? ({ role: "dialog", "aria-modal": "true" } as const)
     : ({ role: "region" } as const);
@@ -173,7 +183,10 @@ export function Notice({ notice, onAction }: NoticeProps) {
         aria-describedby={descriptionId}
         aria-busy={pending ? "true" : "false"}
         data-error={hasError ? "true" : "false"}
+        onClick={handleComposedEvent}
         onKeyDown={handleKeyDown}
+        onPointerDown={handleComposedEvent}
+        onPointerUp={handleComposedEvent}
         tabIndex={-1}
       >
         <div class="notice__identity">
