@@ -579,6 +579,130 @@ describe("BackgroundController messages and actions", () => {
     expect(adapter.sent).toEqual([]);
   });
 
+  it("waits for a blocked same-URL reload before completing a handshake", async () => {
+    const harness = await createHarness();
+    const { controller } = harness;
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    const blocked = await blockConfiguration(harness);
+
+    const reloading = controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
+    const handshaking = controller.handleMessage(
+      { type: "content/handshake", url: "https://shop.example.com/" },
+      sender(),
+    );
+    blocked.release();
+
+    await expect(Promise.all([blocked.operation, reloading, handshaking])).resolves.toEqual([
+      { ok: true, data: { directNoticeMode: "banner", contentNoticeMode: "banner" } },
+      undefined,
+      { ok: true, data: { navigationId: "nav-2", notice: null } },
+    ]);
+  });
+
+  it("waits for a blocked same-URL reload before reading popup state", async () => {
+    const harness = await createHarness();
+    const { adapter, controller } = harness;
+    adapter.tabUrls.set(8, "https://shop.example.com/");
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    const blocked = await blockConfiguration(harness);
+
+    const reloading = controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
+    const popup = controller.handleMessage({ type: "popup/get", tabId: 8 }, {});
+    blocked.release();
+
+    await Promise.all([blocked.operation, reloading]);
+    await expect(popup).resolves.toMatchObject({
+      ok: true,
+      data: { status: "none", hostname: "shop.example.com", evidence: [] },
+    });
+  });
+
+  it("makes an old Continue ID stale behind a blocked same-URL reload", async () => {
+    const harness = await createHarness();
+    const { adapter, controller, navigationStore } = harness;
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+    const blocked = await blockConfiguration(harness);
+
+    const reloading = controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
+    const continuing = controller.handleMessage(
+      { type: "notice/continue", navigationId: "nav-1" },
+      sender(),
+    );
+    blocked.release();
+
+    await Promise.all([blocked.operation, reloading]);
+    await expect(continuing).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/navigation/i),
+    });
+    expect(await navigationStore.get(8)).toMatchObject({
+      navigationId: "nav-2",
+      dismissed: { direct: false, content: false },
+    });
+    expect(adapter.sent).toHaveLength(1);
+    expect(adapter.sent[0]?.message).toMatchObject({
+      navigationId: "nav-1",
+      notice: { mode: "banner" },
+    });
+  });
+
+  it("makes an old Ignore ID stale behind a blocked same-URL reload", async () => {
+    const harness = await createHarness();
+    const { controller, navigationStore, repository } = harness;
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    const blocked = await blockConfiguration(harness);
+
+    const reloading = controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
+    const ignoring = controller.handleMessage(
+      {
+        type: "notice/ignore",
+        navigationId: "nav-1",
+        rule: { scope: "site", value: "example.com" },
+      },
+      sender(),
+    );
+    blocked.release();
+
+    await Promise.all([blocked.operation, reloading]);
+    await expect(ignoring).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/navigation/i),
+    });
+    expect((await repository.getOptionsSnapshot()).ignoreRules).toEqual([]);
+    expect(await navigationStore.get(8)).toMatchObject({
+      navigationId: "nav-2",
+      suppressedForNavigation: false,
+    });
+  });
+
+  it("makes an old Leave ID stale behind a blocked same-URL reload", async () => {
+    const harness = await createHarness();
+    const { adapter, controller } = harness;
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    const blocked = await blockConfiguration(harness);
+
+    const reloading = controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
+    const leaving = controller.handleMessage(
+      { type: "notice/leave", navigationId: "nav-1" },
+      sender(),
+    );
+    blocked.release();
+
+    await Promise.all([blocked.operation, reloading]);
+    await expect(leaving).resolves.toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/navigation/i),
+    });
+    expect(adapter.backedTabs).toEqual([]);
+    expect(adapter.blankTabs).toEqual([]);
+  });
+
   it("continues by dismissing the currently derived category for one navigation", async () => {
     const { adapter, controller, navigationStore } = await createHarness();
     await controller.handleBeforeRequest(beforeRequest());
@@ -611,6 +735,42 @@ describe("BackgroundController messages and actions", () => {
       }),
     );
     expect(adapter.sent.at(-1)?.message.notice).toBeNull();
+  });
+
+  it.each([
+    {
+      label: "Continue",
+      request: { type: "notice/continue", navigationId: "nav-1" } as const,
+    },
+    {
+      label: "Ignore",
+      request: {
+        type: "notice/ignore",
+        navigationId: "nav-1",
+        rule: { scope: "site", value: "example.com" },
+      } as const,
+    },
+  ])("responds to $label without waiting for notice delivery", async ({ request }) => {
+    const { adapter, controller } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+    const sendStarted = deferred<void>();
+    vi.spyOn(adapter, "sendNotice").mockImplementation(async (tabId, message) => {
+      adapter.sent.push({ tabId, message });
+      sendStarted.resolve();
+      await new Promise<void>(() => undefined);
+    });
+    let response: unknown;
+
+    void controller.handleMessage(request, sender()).then((result) => {
+      response = result;
+    });
+    await sendStarted.promise;
+
+    await vi.waitFor(() => expect(response).toEqual({ ok: true, data: undefined }), {
+      timeout: 500,
+    });
   });
 
   it.each([
@@ -1046,6 +1206,107 @@ describe("BackgroundController messages and actions", () => {
     expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual(["banner", "overlay"]);
   });
 
+  it.each([
+    {
+      label: "update",
+      initialSettings: DEFAULT_SETTINGS,
+      request: {
+        type: "options/update-settings",
+        settings: { directNoticeMode: "banner", contentNoticeMode: "banner" },
+      } as const,
+      expectedMode: "banner",
+    },
+    {
+      label: "reset",
+      initialSettings: { directNoticeMode: "banner", contentNoticeMode: "banner" } as const,
+      request: { type: "options/reset-section", section: "settings" } as const,
+      expectedMode: "overlay",
+    },
+  ])("sends each tab's settings $label before mutating the next tab", async (scenario) => {
+    const { adapter, controller } = await createHarness({ settings: scenario.initialSettings });
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    await controller.handleBeforeRequest(
+      beforeRequest({
+        tabId: 9,
+        requestId: "main-9",
+        url: "https://other.example.com/",
+      }),
+    );
+    await controller.handleResponseStarted(
+      responseStarted({
+        tabId: 9,
+        requestId: "main-9",
+        url: "https://other.example.com/",
+      }),
+    );
+    adapter.sent.length = 0;
+    const persistSession = fakeBrowser.storage.session.set.bind(fakeBrowser.storage.session);
+    const secondMutationStarted = deferred<void>();
+    const secondMutationCanFinish = deferred<void>();
+    vi.spyOn(fakeBrowser.storage.session, "set").mockImplementationOnce(async (items) => {
+      expect(Object.hasOwn(items, "navigation:8")).toBe(true);
+      await persistSession(items);
+    });
+    vi.spyOn(fakeBrowser.storage.session, "set").mockImplementationOnce(async (items) => {
+      expect(Object.hasOwn(items, "navigation:9")).toBe(true);
+      secondMutationStarted.resolve();
+      await secondMutationCanFinish.promise;
+      await persistSession(items);
+    });
+
+    const operation = controller.handleMessage(scenario.request, {});
+    await secondMutationStarted.promise;
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(adapter.sent).toHaveLength(1);
+          expect(adapter.sent[0]).toMatchObject({
+            tabId: 8,
+            message: { notice: { mode: scenario.expectedMode } },
+          });
+        },
+        { timeout: 500 },
+      );
+    } finally {
+      secondMutationCanFinish.resolve();
+      await operation;
+    }
+  });
+
+  it.each([
+    {
+      label: "update",
+      initialSettings: DEFAULT_SETTINGS,
+      request: {
+        type: "options/update-settings",
+        settings: { directNoticeMode: "banner", contentNoticeMode: "banner" },
+      } as const,
+      expectedData: { directNoticeMode: "banner", contentNoticeMode: "banner" },
+    },
+    {
+      label: "reset",
+      initialSettings: { directNoticeMode: "banner", contentNoticeMode: "banner" } as const,
+      request: { type: "options/reset-section", section: "settings" } as const,
+      expectedData: DEFAULT_SETTINGS,
+    },
+  ])("responds to a settings $label without waiting for delivery", async (scenario) => {
+    const { adapter, controller } = await createHarness({ settings: scenario.initialSettings });
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    const sendStarted = deferred<void>();
+    vi.spyOn(adapter, "sendNotice").mockImplementation(async () => {
+      sendStarted.resolve();
+      await new Promise<void>(() => undefined);
+    });
+
+    const operation = controller.handleMessage(scenario.request, {});
+    await sendStarted.promise;
+
+    await expect(operation).resolves.toEqual({ ok: true, data: scenario.expectedData });
+  });
+
   it("does not let a never-settling notice block same-tab navigation or settings state", async () => {
     const { adapter, controller, navigationStore, repository } = await createHarness();
     await controller.handleBeforeRequest(beforeRequest());
@@ -1129,7 +1390,159 @@ describe("BackgroundController messages and actions", () => {
     }
 
     await Promise.all([banner, overlay]);
+    await vi.waitFor(() =>
+      expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual([
+        "banner",
+        "overlay",
+      ]),
+    );
+  });
+
+  it("coalesces same-tab pending notices to the latest state", async () => {
+    const { adapter, controller } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+    const firstSendStarted = deferred<void>();
+    const firstSendCanFinish = deferred<void>();
+    vi.spyOn(adapter, "sendNotice").mockImplementation(async (tabId, message) => {
+      adapter.sent.push({ tabId, message });
+
+      if (adapter.sent.length === 1) {
+        firstSendStarted.resolve();
+        await firstSendCanFinish.promise;
+      }
+    });
+    const bannerSettings: Settings = {
+      directNoticeMode: "banner",
+      contentNoticeMode: "banner",
+    };
+
+    await controller.handleMessage(
+      { type: "options/update-settings", settings: bannerSettings },
+      {},
+    );
+    await firstSendStarted.promise;
+    await controller.handleMessage(
+      { type: "options/update-settings", settings: DEFAULT_SETTINGS },
+      {},
+    );
+    await controller.handleMessage(
+      { type: "options/update-settings", settings: bannerSettings },
+      {},
+    );
+    await controller.handleMessage(
+      { type: "options/update-settings", settings: DEFAULT_SETTINGS },
+      {},
+    );
+    expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual(["banner"]);
+
+    firstSendCanFinish.resolve();
+    await vi.waitFor(() => expect(adapter.sent.length).toBeGreaterThanOrEqual(2));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
     expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual(["banner", "overlay"]);
+  });
+
+  it("delivers the latest pending notice after an outbound rejection", async () => {
+    const { adapter, controller } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+    const firstSendStarted = deferred<void>();
+    const firstSendCanFail = deferred<void>();
+    vi.spyOn(adapter, "sendNotice").mockImplementation(async (tabId, message) => {
+      adapter.sent.push({ tabId, message });
+
+      if (adapter.sent.length === 1) {
+        firstSendStarted.resolve();
+        await firstSendCanFail.promise;
+        throw new Error("receiver closed");
+      }
+    });
+    const bannerSettings: Settings = {
+      directNoticeMode: "banner",
+      contentNoticeMode: "banner",
+    };
+
+    await controller.handleMessage(
+      { type: "options/update-settings", settings: bannerSettings },
+      {},
+    );
+    await firstSendStarted.promise;
+    await controller.handleMessage(
+      { type: "options/update-settings", settings: DEFAULT_SETTINGS },
+      {},
+    );
+    firstSendCanFail.resolve();
+
+    await vi.waitFor(() =>
+      expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual([
+        "banner",
+        "overlay",
+      ]),
+    );
+  });
+
+  it("detaches blocked outbound work when a tab ID is reused", async () => {
+    const { adapter, controller } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    const oldSendStarted = deferred<void>();
+    const oldSendCanFinish = deferred<void>();
+    const newSendCanFinish = deferred<void>();
+    let newSendStarted = false;
+    vi.spyOn(adapter, "sendNotice").mockImplementation(async (tabId, message) => {
+      adapter.sent.push({ tabId, message });
+
+      if (message.navigationId === "nav-1" && adapter.sent.length === 1) {
+        oldSendStarted.resolve();
+        await oldSendCanFinish.promise;
+      }
+
+      if (message.navigationId === "nav-2" && message.notice !== null) {
+        newSendStarted = true;
+        await newSendCanFinish.promise;
+      }
+    });
+
+    const oldResponse = controller.handleResponseStarted(responseStarted());
+    await oldSendStarted.promise;
+    await controller.handleMessage({ type: "notice/continue", navigationId: "nav-1" }, sender());
+    await controller.handleTabRemoved(8);
+    await controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
+    const newResponse = controller.handleResponseStarted(responseStarted({ requestId: "main-2" }));
+
+    try {
+      await vi.waitFor(
+        () => {
+          expect(newSendStarted).toBe(true);
+          expect(adapter.sent.map(({ message }) => message.navigationId)).toEqual([
+            "nav-1",
+            "nav-2",
+          ]);
+        },
+        { timeout: 500 },
+      );
+      await controller.handleMessage({ type: "notice/continue", navigationId: "nav-2" }, sender());
+      oldSendCanFinish.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(adapter.sent.map(({ message }) => message.navigationId)).toEqual(["nav-1", "nav-2"]);
+
+      newSendCanFinish.resolve();
+      await vi.waitFor(() => expect(adapter.sent).toHaveLength(3));
+    } finally {
+      oldSendCanFinish.resolve();
+      newSendCanFinish.resolve();
+    }
+
+    await Promise.all([oldResponse, newResponse]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(adapter.sent.map(({ message }) => message.navigationId)).toEqual([
+      "nav-1",
+      "nav-2",
+      "nav-2",
+    ]);
+    expect(adapter.sent.at(-1)?.message.notice).toBeNull();
   });
 
   it("orders a delayed navigation start before disabling settings without rearming it", async () => {
@@ -1409,6 +1822,61 @@ describe("BackgroundController messages and actions", () => {
 
     await Promise.all([blocked.operation, starting, removing]);
     await expect(navigationStore.get(8)).resolves.toBeUndefined();
+  });
+
+  it("starts a new tab generation while removal for the reused ID is pending", async () => {
+    const { adapter, controller, navigationStore } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    const removeSession = fakeBrowser.storage.session.remove.bind(fakeBrowser.storage.session);
+    const removalStarted = deferred<void>();
+    const removalCanFinish = deferred<void>();
+    vi.spyOn(fakeBrowser.storage.session, "remove").mockImplementationOnce(async (keys) => {
+      removalStarted.resolve();
+      await removalCanFinish.promise;
+      await removeSession(keys);
+    });
+
+    const removing = controller.handleTabRemoved(8);
+    await removalStarted.promise;
+    const starting = controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
+    const responding = controller.handleResponseStarted(responseStarted({ requestId: "main-2" }));
+    removalCanFinish.resolve();
+
+    await Promise.all([removing, starting, responding]);
+    expect(await navigationStore.get(8)).toMatchObject({
+      requestId: "main-2",
+      navigationId: "nav-2",
+      direct: { match: { evidence: [{ kind: "header", signal: "cf-ray" }] } },
+    });
+    expect(adapter.sent.at(-1)?.message).toMatchObject({
+      navigationId: "nav-2",
+      notice: { kind: "direct" },
+    });
+  });
+
+  it("ignores a late response when removal has no replacement main-frame start", async () => {
+    const { adapter, controller, navigationStore } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    adapter.sent.length = 0;
+    const removeSession = fakeBrowser.storage.session.remove.bind(fakeBrowser.storage.session);
+    const removalStarted = deferred<void>();
+    const removalCanFinish = deferred<void>();
+    vi.spyOn(fakeBrowser.storage.session, "remove").mockImplementationOnce(async (keys) => {
+      removalStarted.resolve();
+      await removalCanFinish.promise;
+      await removeSession(keys);
+    });
+
+    const removing = controller.handleTabRemoved(8);
+    await removalStarted.promise;
+    const responding = controller.handleResponseStarted(
+      responseStarted({ requestId: "asset-late", type: "script" }),
+    );
+    removalCanFinish.resolve();
+
+    await Promise.all([removing, responding]);
+    await expect(navigationStore.get(8)).resolves.toBeUndefined();
+    expect(adapter.sent).toEqual([]);
   });
 
   it("returns protocol errors for invalid tab IDs and unknown messages", async () => {

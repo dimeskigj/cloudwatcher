@@ -57,9 +57,16 @@ interface ControllerOptions {
   now?: () => string;
 }
 
-interface PendingNotice {
-  tabId: number;
-  message: RuntimePush;
+interface TabEventGeneration {
+  readonly tabId: number;
+  queue: Promise<unknown>;
+  removed: boolean;
+  removal?: Promise<void>;
+}
+
+interface OutboundDelivery {
+  readonly generation: TabEventGeneration;
+  pending?: RuntimePush;
 }
 
 const TOP_LEVEL_PROTOCOLS = new Set(["http:", "https:"]);
@@ -125,9 +132,8 @@ function isSameRule(candidate: unknown, expected: IgnoreRule): boolean {
 export class BackgroundController {
   private initialization: Promise<void> | undefined;
   private configurationQueue: Promise<unknown> = Promise.resolve();
-  private readonly tabEventQueues = new Map<number, Promise<unknown>>();
-  private readonly outboundQueues = new Map<number, Promise<unknown>>();
-  private readonly removedTabs = new Set<number>();
+  private readonly tabEventGenerations = new Map<number, TabEventGeneration>();
+  private readonly outboundDeliveries = new Map<number, OutboundDelivery>();
   private settings: Settings = DEFAULT_SETTINGS;
   private ignoreRules: IgnoreRule[] = [];
   private ranges: CompiledCidr[] = [];
@@ -154,27 +160,33 @@ export class BackgroundController {
       return Promise.resolve();
     }
 
-    if (this.removedTabs.has(details.tabId)) {
+    const generation = this.openTabEventGeneration(details.tabId, true);
+
+    if (generation === undefined) {
       return Promise.resolve();
     }
 
-    return this.enqueueTabEvent(details.tabId, () => this.processBeforeRequest(details));
+    return this.enqueueTabEvent(generation, () => this.processBeforeRequest(details));
   }
 
   handleResponseStarted(details: ResponseStartedDetails): Promise<void> {
-    if (details.tabId < 0 || this.removedTabs.has(details.tabId)) {
+    if (details.tabId < 0) {
       return Promise.resolve();
     }
 
-    let delivery: Promise<void> | undefined;
-    const transaction = this.enqueueTabEvent(details.tabId, async () => {
+    const generation = this.openTabEventGeneration(details.tabId, false);
+
+    if (generation === undefined) {
+      return Promise.resolve();
+    }
+
+    return this.enqueueTabEvent(generation, async () => {
       const message = await this.processResponseStarted(details);
 
       if (message !== undefined) {
-        delivery = this.enqueueNotice(details.tabId, message);
+        this.enqueueNotice(generation, message);
       }
     });
-    return transaction.then(() => delivery);
   }
 
   private async processBeforeRequest(details: BeforeRequestDetails): Promise<void> {
@@ -265,59 +277,113 @@ export class BackgroundController {
     sender: RuntimeMessageSender,
   ): Promise<RuntimeResponse<unknown>> {
     try {
-      await this.initialize();
-
       switch (message.type) {
         case "content/handshake":
-          return success(await this.handshake(message.url, sender));
         case "notice/continue":
-          await this.continueNavigation(message.navigationId, sender);
-          return success(undefined);
         case "notice/ignore":
-          await this.ignoreNavigation(message.navigationId, message.rule, sender);
-          return success(undefined);
-        case "notice/leave":
-          await this.leaveNavigation(message.navigationId, sender);
-          return success(undefined);
-        case "popup/get":
-          return success(await this.getPopupState(requireTabId(message.tabId, "Popup request")));
-        case "options/get":
-          return success(await this.repository.getOptionsSnapshot());
-        case "options/update-settings":
-          return success(await this.updateSettings(message.settings));
-        case "options/remove-ignore":
-          return success(await this.removeIgnoreRule(message.rule));
-        case "options/save-ranges": {
-          const validation = validateCidrText(message.draft);
-
-          if (validation.errors.length > 0) {
-            return {
-              ok: false,
-              error: "One or more CIDR ranges are invalid.",
-              validationErrors: validation.errors,
-            };
-          }
-
-          return success(await this.saveRanges(validation.values));
+        case "notice/leave": {
+          const tabId = requireTabId(sender.tab?.id, "Message sender");
+          const generation = this.requireOpenTabEventGeneration(tabId);
+          return await this.enqueueTabEvent(generation, () =>
+            this.handleInitializedMessage(message, sender, generation),
+          );
         }
-        case "options/clear-activity":
-          return success(await this.repository.clearActivity());
-        case "options/reset-section":
-          return success(await this.resetSection(message.section));
+        case "popup/get": {
+          const tabId = requireTabId(message.tabId, "Popup request");
+          const generation = this.requireOpenTabEventGeneration(tabId);
+          return await this.enqueueTabEvent(generation, () =>
+            this.handleInitializedMessage(message, sender, generation),
+          );
+        }
         default:
-          return { ok: false, error: "Unknown runtime request." };
+          return await this.handleInitializedMessage(message, sender);
       }
     } catch (error) {
       return failure(error);
     }
   }
 
+  private async handleInitializedMessage(
+    message: RuntimeRequest,
+    sender: RuntimeMessageSender,
+    generation?: TabEventGeneration,
+  ): Promise<RuntimeResponse<unknown>> {
+    await this.initialize();
+
+    switch (message.type) {
+      case "content/handshake":
+        return success(await this.handshake(message.url, sender));
+      case "notice/continue":
+        await this.continueNavigation(
+          message.navigationId,
+          sender,
+          this.requireMessageGeneration(generation),
+        );
+        return success(undefined);
+      case "notice/ignore":
+        await this.ignoreNavigation(
+          message.navigationId,
+          message.rule,
+          sender,
+          this.requireMessageGeneration(generation),
+        );
+        return success(undefined);
+      case "notice/leave":
+        await this.leaveNavigation(message.navigationId, sender);
+        return success(undefined);
+      case "popup/get":
+        return success(await this.getPopupState(requireTabId(message.tabId, "Popup request")));
+      case "options/get":
+        return success(await this.repository.getOptionsSnapshot());
+      case "options/update-settings":
+        return success(await this.updateSettings(message.settings));
+      case "options/remove-ignore":
+        return success(await this.removeIgnoreRule(message.rule));
+      case "options/save-ranges": {
+        const validation = validateCidrText(message.draft);
+
+        if (validation.errors.length > 0) {
+          return {
+            ok: false,
+            error: "One or more CIDR ranges are invalid.",
+            validationErrors: validation.errors,
+          };
+        }
+
+        return success(await this.saveRanges(validation.values));
+      }
+      case "options/clear-activity":
+        return success(await this.repository.clearActivity());
+      case "options/reset-section":
+        return success(await this.resetSection(message.section));
+      default:
+        return { ok: false, error: "Unknown runtime request." };
+    }
+  }
+
   handleTabRemoved(tabId: number): Promise<void> {
-    this.removedTabs.add(tabId);
-    return this.enqueueTabEvent(tabId, async () => {
+    const current = this.tabEventGenerations.get(tabId);
+
+    if (current?.removed === true) {
+      return current.removal ?? Promise.resolve();
+    }
+
+    const generation = current ?? this.createTabEventGeneration(tabId);
+    generation.removed = true;
+    this.detachOutboundDelivery(generation);
+    const removal = this.enqueueTabEvent(generation, async () => {
       await this.initialize().catch(() => undefined);
       await this.navigationStore.remove(tabId);
     });
+    const completion = removal.then(
+      () => this.finishTabRemoval(generation),
+      (error: unknown) => {
+        this.finishTabRemoval(generation);
+        throw error;
+      },
+    );
+    generation.removal = completion;
+    return completion;
   }
 
   private async handshake(url: string, sender: RuntimeMessageSender): Promise<HandshakeData> {
@@ -342,6 +408,7 @@ export class BackgroundController {
   private async continueNavigation(
     navigationId: string,
     sender: RuntimeMessageSender,
+    generation: TabEventGeneration,
   ): Promise<void> {
     const tabId = requireTabId(sender.tab?.id, "Message sender");
     const push = await this.navigationStore.update(tabId, async (current) => {
@@ -358,13 +425,14 @@ export class BackgroundController {
         value: this.noticePush(dismissed),
       };
     });
-    await this.enqueueNotice(tabId, push);
+    this.enqueueNotice(generation, push);
   }
 
   private async ignoreNavigation(
     navigationId: string,
     rule: IgnoreRule,
     sender: RuntimeMessageSender,
+    generation: TabEventGeneration,
   ): Promise<void> {
     const tabId = requireTabId(sender.tab?.id, "Message sender");
     const push = await this.enqueueConfiguration(async () => {
@@ -386,7 +454,7 @@ export class BackgroundController {
       });
       return push;
     });
-    await this.enqueueNotice(tabId, push);
+    this.enqueueNotice(generation, push);
   }
 
   private async leaveNavigation(navigationId: string, sender: RuntimeMessageSender): Promise<void> {
@@ -452,15 +520,13 @@ export class BackgroundController {
   }
 
   private async updateSettings(settings: Settings): Promise<Settings> {
-    const { replacement, notices } = await this.enqueueConfiguration(async () => {
+    return this.enqueueConfiguration(async () => {
       const previous = this.settings;
       const replacement = await this.repository.updateSettings(settings);
       this.settings = replacement;
-      const notices = await this.applySettingsToOpenNavigations(previous, replacement);
-      return { replacement, notices };
+      await this.applySettingsToOpenNavigations(previous, replacement);
+      return replacement;
     });
-    await this.deliverNotices(notices);
-    return replacement;
   }
 
   private removeIgnoreRule(rule: IgnoreRule): Promise<IgnoreRule[]> {
@@ -482,11 +548,16 @@ export class BackgroundController {
   private async applySettingsToOpenNavigations(
     previous: Settings,
     replacement: Settings,
-  ): Promise<PendingNotice[]> {
+  ): Promise<void> {
     const openNavigations = await this.navigationStore.list();
-    const notices: PendingNotice[] = [];
 
     for (const navigation of openNavigations) {
+      const generation = this.openTabEventGeneration(navigation.tabId, false);
+
+      if (generation === undefined) {
+        continue;
+      }
+
       const push = await this.navigationStore.update(navigation.tabId, async (current) => {
         if (current === undefined) {
           return { value: undefined };
@@ -515,24 +586,21 @@ export class BackgroundController {
       });
 
       if (push !== undefined) {
-        notices.push({ tabId: navigation.tabId, message: push });
+        this.enqueueNotice(generation, push);
       }
     }
-
-    return notices;
   }
 
   private async resetSection(section: StorageSection): Promise<unknown> {
-    const { replacement, notices } = await this.enqueueConfiguration(async () => {
+    return this.enqueueConfiguration(async () => {
       const previousSettings = this.settings;
       const replacement = await this.repository.resetSection(section);
       const snapshot = await this.repository.getOptionsSnapshot();
-      let notices: PendingNotice[] = [];
 
       switch (section) {
         case "settings":
           this.settings = snapshot.settings;
-          notices = await this.applySettingsToOpenNavigations(previousSettings, this.settings);
+          await this.applySettingsToOpenNavigations(previousSettings, this.settings);
           break;
         case "ignoreRules":
           this.ignoreRules = snapshot.ignoreRules;
@@ -544,10 +612,8 @@ export class BackgroundController {
           break;
       }
 
-      return { replacement, notices };
+      return replacement;
     });
-    await this.deliverNotices(notices);
-    return replacement;
   }
 
   private requireNavigation(
@@ -559,6 +625,14 @@ export class BackgroundController {
     }
 
     return state;
+  }
+
+  private requireMessageGeneration(generation: TabEventGeneration | undefined): TabEventGeneration {
+    if (generation === undefined) {
+      throw new Error("The message does not identify a tab generation.");
+    }
+
+    return generation;
   }
 
   private noticePush(state: NavigationState): RuntimePush {
@@ -578,43 +652,125 @@ export class BackgroundController {
     return result;
   }
 
-  private enqueueTabEvent<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
-    const prior = this.tabEventQueues.get(tabId) ?? Promise.resolve();
-    const result = prior.then(operation, operation);
-    const lock = result.then(
+  private createTabEventGeneration(
+    tabId: number,
+    prior: Promise<unknown> = Promise.resolve(),
+  ): TabEventGeneration {
+    const generation: TabEventGeneration = {
+      tabId,
+      queue: prior.then(
+        () => undefined,
+        () => undefined,
+      ),
+      removed: false,
+    };
+    this.tabEventGenerations.set(tabId, generation);
+    return generation;
+  }
+
+  private openTabEventGeneration(
+    tabId: number,
+    replaceRemoved: boolean,
+  ): TabEventGeneration | undefined {
+    const current = this.tabEventGenerations.get(tabId);
+
+    if (current?.removed === true) {
+      return replaceRemoved
+        ? this.createTabEventGeneration(tabId, current.removal ?? current.queue)
+        : undefined;
+    }
+
+    return current ?? this.createTabEventGeneration(tabId);
+  }
+
+  private requireOpenTabEventGeneration(tabId: number): TabEventGeneration {
+    const generation = this.openTabEventGeneration(tabId, false);
+
+    if (generation === undefined) {
+      throw new Error("The tab is no longer available.");
+    }
+
+    return generation;
+  }
+
+  private finishTabRemoval(generation: TabEventGeneration): void {
+    if (this.tabEventGenerations.get(generation.tabId) === generation) {
+      this.tabEventGenerations.delete(generation.tabId);
+    }
+  }
+
+  private enqueueTabEvent<T>(
+    generation: TabEventGeneration,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const result = generation.queue.then(operation, operation);
+    generation.queue = result.then(
       () => undefined,
       () => undefined,
     );
-    this.tabEventQueues.set(tabId, lock);
-    void lock.then(() => {
-      if (this.tabEventQueues.get(tabId) === lock) {
-        this.tabEventQueues.delete(tabId);
-      }
-    });
     return result;
   }
 
-  private enqueueNotice(tabId: number, message: RuntimePush): Promise<void> {
-    const prior = this.outboundQueues.get(tabId) ?? Promise.resolve();
-    const result = prior.then(
-      () => this.adapter.sendNotice(tabId, message),
-      () => this.adapter.sendNotice(tabId, message),
-    );
-    const lock = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.outboundQueues.set(tabId, lock);
-    void lock.then(() => {
-      if (this.outboundQueues.get(tabId) === lock) {
-        this.outboundQueues.delete(tabId);
-      }
-    });
-    return result;
+  private enqueueNotice(generation: TabEventGeneration, message: RuntimePush): void {
+    if (generation.removed || this.tabEventGenerations.get(generation.tabId) !== generation) {
+      return;
+    }
+
+    const current = this.outboundDeliveries.get(generation.tabId);
+
+    if (current?.generation === generation) {
+      current.pending = message;
+      return;
+    }
+
+    const delivery: OutboundDelivery = { generation };
+    this.outboundDeliveries.set(generation.tabId, delivery);
+    this.startNoticeDelivery(delivery, message);
   }
 
-  private async deliverNotices(notices: readonly PendingNotice[]): Promise<void> {
-    await Promise.all(notices.map(({ tabId, message }) => this.enqueueNotice(tabId, message)));
+  private startNoticeDelivery(delivery: OutboundDelivery, message: RuntimePush): void {
+    let result: Promise<void>;
+
+    try {
+      result = this.adapter.sendNotice(delivery.generation.tabId, message);
+    } catch {
+      this.finishNoticeDelivery(delivery);
+      return;
+    }
+
+    void result.then(
+      () => this.finishNoticeDelivery(delivery),
+      () => this.finishNoticeDelivery(delivery),
+    );
+  }
+
+  private finishNoticeDelivery(delivery: OutboundDelivery): void {
+    const tabId = delivery.generation.tabId;
+
+    if (this.outboundDeliveries.get(tabId) !== delivery) {
+      return;
+    }
+
+    const pending = delivery.pending;
+
+    if (pending === undefined) {
+      this.outboundDeliveries.delete(tabId);
+      return;
+    }
+
+    delivery.pending = undefined;
+    this.startNoticeDelivery(delivery, pending);
+  }
+
+  private detachOutboundDelivery(generation: TabEventGeneration): void {
+    const delivery = this.outboundDeliveries.get(generation.tabId);
+
+    if (delivery?.generation !== generation) {
+      return;
+    }
+
+    delivery.pending = undefined;
+    this.outboundDeliveries.delete(generation.tabId);
   }
 
   private async initializeState(): Promise<void> {
