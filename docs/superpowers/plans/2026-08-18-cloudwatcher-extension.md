@@ -446,7 +446,7 @@ Test canonical network masking, deduplication, IPv4/IPv6 boundaries, blank input
 const result = validateCidrText("104.16.1.7/13\n2606:4700:1234::1/32\n104.16.0.0/13");
 expect(result.errors).toEqual([]);
 expect(result.values).toEqual(["104.16.0.0/13", "2606:4700::/32"]);
-expect(matchIp("104.31.255.255", result.compiled)?.text).toBe("104.16.0.0/13");
+expect(matchIp("104.23.255.255", result.compiled)?.text).toBe("104.16.0.0/13");
 expect(matchIp("104.32.0.0", result.compiled)).toBeUndefined();
 expect(matchIp("2606:4700::1", result.compiled)?.text).toBe("2606:4700::/32");
 expect(validateCidrText("10.0.0.0/33").errors[0]).toMatchObject({ line: 1 });
