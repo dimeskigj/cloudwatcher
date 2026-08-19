@@ -39,6 +39,31 @@ export interface SiteIdentity {
   registrableDomain?: string;
 }
 
+export interface NavigationState {
+  tabId: number;
+  requestId: string;
+  navigationId: string;
+  topLevelUrl: string;
+  identity: SiteIdentity;
+  incognito: boolean;
+  direct?: { match: DetectionMatch };
+  content?: { match: DetectionMatch; resourceHost: string };
+  counted: Record<DetectionCategory, boolean>;
+  dismissed: Record<DetectionCategory, boolean>;
+  eligible: Record<DetectionCategory, boolean>;
+  suppressedForNavigation: boolean;
+}
+
+export interface NoticeState {
+  navigationId: string;
+  kind: DetectionCategory;
+  mode: "overlay" | "banner";
+  siteHost: string;
+  resourceHost?: string;
+  evidence: DetectionEvidence[];
+  ignoreChoices: IgnoreChoice[];
+}
+
 export interface DomainSummary {
   directNavigations: number;
   contentNavigations: number;
