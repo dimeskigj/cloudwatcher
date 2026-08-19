@@ -24,8 +24,7 @@ export class SessionNavigationStore {
       current: NavigationState | undefined,
     ) => Promise<{ state?: NavigationState; value: T }>,
   ): Promise<T> {
-    const prior = this.locks.get(tabId) ?? Promise.resolve();
-    const operation = async (): Promise<T> => {
+    return this.enqueue(tabId, async () => {
       const current = await this.get(tabId);
       const { state, value } = await callback(current);
 
@@ -36,7 +35,23 @@ export class SessionNavigationStore {
       }
 
       return value;
-    };
+    });
+  }
+
+  remove(tabId: number): Promise<void> {
+    return this.enqueue(tabId, () => this.session.remove(navigationKey(tabId)));
+  }
+
+  async list(): Promise<NavigationState[]> {
+    const stored = await this.session.get(null);
+    return Object.entries(stored)
+      .filter(([key]) => key.startsWith(NAVIGATION_KEY_PREFIX))
+      .map(([, state]) => state as NavigationState)
+      .sort((left, right) => left.tabId - right.tabId);
+  }
+
+  private enqueue<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
+    const prior = this.locks.get(tabId) ?? Promise.resolve();
     const result = prior.then(operation, operation);
     const lock = result.then(
       () => undefined,
@@ -49,17 +64,5 @@ export class SessionNavigationStore {
       }
     });
     return result;
-  }
-
-  async remove(tabId: number): Promise<void> {
-    await this.session.remove(navigationKey(tabId));
-  }
-
-  async list(): Promise<NavigationState[]> {
-    const stored = await this.session.get(null);
-    return Object.entries(stored)
-      .filter(([key]) => key.startsWith(NAVIGATION_KEY_PREFIX))
-      .map(([, state]) => state as NavigationState)
-      .sort((left, right) => left.tabId - right.tabId);
   }
 }

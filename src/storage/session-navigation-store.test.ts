@@ -83,6 +83,41 @@ describe("SessionNavigationStore", () => {
     await expect(store.get(4)).resolves.toBeUndefined();
   });
 
+  it("waits for an in-flight same-tab update before removing its state", async () => {
+    const store = new SessionNavigationStore(fakeBrowser.storage.session);
+    await fakeBrowser.storage.session.set({ "navigation:4": navigation(4) });
+    let releaseUpdate: () => void = () => undefined;
+    const updateCanFinish = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    let markUpdateStarted: () => void = () => undefined;
+    const updateStarted = new Promise<void>((resolve) => {
+      markUpdateStarted = resolve;
+    });
+    let removalFinished = false;
+
+    const update = store.update(4, async (current) => {
+      markUpdateStarted();
+      await updateCanFinish;
+      return { state: dismissNotice(requireState(current), "direct"), value: "updated" };
+    });
+    await updateStarted;
+    const removal = store.remove(4).then(() => {
+      removalFinished = true;
+    });
+
+    try {
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(removalFinished).toBe(false);
+    } finally {
+      releaseUpdate();
+    }
+
+    await expect(Promise.all([update, removal])).resolves.toEqual(["updated", undefined]);
+    await expect(store.get(4)).resolves.toBeUndefined();
+  });
+
   it("serializes concurrent updates to one tab without losing either mutation", async () => {
     const store = new SessionNavigationStore(fakeBrowser.storage.session);
     await fakeBrowser.storage.session.set({ "navigation:4": navigation(4) });
