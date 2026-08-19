@@ -20,6 +20,7 @@
   --cw-ink: oklch(0.2 0 0);
   --cw-muted: oklch(0.42 0 0);
   --cw-line: oklch(0.84 0 0);
+  --cw-control-border: oklch(0.62 0 0);
   --cw-signal: oklch(0.489 0.19 28.3);
   --cw-focus: oklch(0.489 0.19 28.3);
   --cw-signal-hover: oklch(0.445 0.18 28.3);
@@ -47,6 +48,7 @@
   justify-content: center;
   padding: 24px;
   overflow: auto;
+  overscroll-behavior: none;
   background: var(--cw-scrim);
   pointer-events: auto;
 }
@@ -72,6 +74,10 @@
     0 2px 8px var(--cw-shadow);
   padding: 24px;
   color: var(--cw-ink);
+}
+
+.notice--overlay .notice__panel {
+  overscroll-behavior: none;
 }
 
 .notice--banner .notice__panel {
@@ -219,9 +225,9 @@
 
 .notice__button {
   appearance: none;
-  min-height: 38px;
+  min-height: 44px;
   margin: 0;
-  border: 1px solid var(--cw-line);
+  border: 1px solid var(--cw-control-border);
   border-radius: 6px;
   background: var(--cw-surface);
   padding: 8px 13px;
@@ -240,13 +246,13 @@
 }
 
 .notice__button--primary {
-  border-color: var(--cw-signal);
+  border-color: var(--cw-focus);
   background: var(--cw-signal);
   color: var(--cw-on-signal);
 }
 
 .notice__button--quiet {
-  border-color: oklch(0 0 0 / 0);
+  border-color: var(--cw-control-border);
   background: oklch(0 0 0 / 0);
 }
 
@@ -256,17 +262,18 @@
 }
 
 .notice__button--primary:not(:disabled):hover {
-  border-color: var(--cw-signal-hover);
+  border-color: var(--cw-focus);
   background: var(--cw-signal-hover);
   color: var(--cw-on-signal);
 }
 
 .notice__button:not(:disabled):active {
   transform: translateY(1px);
-  border-color: var(--cw-signal-active);
+  border-color: var(--cw-muted);
 }
 
 .notice__button--primary:not(:disabled):active {
+  border-color: var(--cw-focus);
   background: var(--cw-signal-active);
 }
 
@@ -376,6 +383,7 @@
     --cw-ink: oklch(0.94 0 0);
     --cw-muted: oklch(0.74 0 0);
     --cw-line: oklch(0.36 0 0);
+    --cw-control-border: oklch(0.52 0 0);
     --cw-focus: oklch(0.56 0.18 28.3);
     --cw-observed: oklch(0.76 0.09 190);
     --cw-error: oklch(0.76 0.14 25);

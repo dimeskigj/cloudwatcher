@@ -121,15 +121,9 @@ export function Notice({ notice, onAction }: NoticeProps) {
   }
 
   function handleKeyDown(event: KeyboardEvent): void {
-    if (isOverlay) {
-      event.stopPropagation();
-    }
-
     if (event.key === "Escape") {
       event.preventDefault();
-      if (!isOverlay) {
-        event.stopPropagation();
-      }
+      event.stopPropagation();
       if (!pending) {
         void performAction({ type: "continue" });
       }

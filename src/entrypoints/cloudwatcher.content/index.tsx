@@ -21,6 +21,7 @@ export interface NoticeRuntimeDependencies {
     onAction: (action: NoticeAction) => Promise<void>,
   ) => void;
   removeHost: (host: NoticeRuntimeHost) => void;
+  activateOverlay: (host: NoticeRuntimeHost) => () => void;
   getActiveElement: () => Element | null;
   restoreFocus: (target: Element) => void;
 }
@@ -39,28 +40,237 @@ export function createClosedNoticeHost(
   return { host, root, mount };
 }
 
-function isHandshakeData(value: unknown): value is HandshakeData {
-  if (typeof value !== "object" || value === null) {
+interface InlineStyleState {
+  value: string;
+  priority: string;
+}
+
+interface PageElementState {
+  inertAttribute: string | null;
+  inertProperty: boolean | undefined;
+  hadStyleAttribute?: boolean;
+  overflow?: InlineStyleState;
+  overscrollBehavior?: InlineStyleState;
+}
+
+function readInlineStyle(element: HTMLElement, property: string): InlineStyleState {
+  return {
+    value: element.style.getPropertyValue(property),
+    priority: element.style.getPropertyPriority(property),
+  };
+}
+
+function restoreInlineStyle(element: HTMLElement, property: string, state: InlineStyleState): void {
+  if (state.value === "") {
+    element.style.removeProperty(property);
+  } else {
+    element.style.setProperty(property, state.value, state.priority);
+  }
+}
+
+function lockScroll(element: HTMLElement): void {
+  if (
+    element.style.getPropertyValue("overflow") !== "hidden" ||
+    element.style.getPropertyPriority("overflow") !== "important"
+  ) {
+    element.style.setProperty("overflow", "hidden", "important");
+  }
+  if (
+    element.style.getPropertyValue("overscroll-behavior") !== "none" ||
+    element.style.getPropertyPriority("overscroll-behavior") !== "important"
+  ) {
+    element.style.setProperty("overscroll-behavior", "none", "important");
+  }
+}
+
+function createOverlayPageGuard(targetDocument: Document, host: HTMLElement): () => void {
+  const documentElement = targetDocument.documentElement;
+  const documentStyle = {
+    hadAttribute: documentElement.hasAttribute("style"),
+    overflow: readInlineStyle(documentElement, "overflow"),
+    overscrollBehavior: readInlineStyle(documentElement, "overscroll-behavior"),
+  };
+  const elementStates = new Map<HTMLElement, PageElementState>();
+  let released = false;
+
+  function restoreElement(element: HTMLElement, state: PageElementState): void {
+    if (state.inertProperty !== undefined) {
+      element.inert = state.inertProperty;
+    }
+    if (state.inertAttribute === null) {
+      element.removeAttribute("inert");
+    } else {
+      element.setAttribute("inert", state.inertAttribute);
+    }
+    if (state.overflow !== undefined && state.overscrollBehavior !== undefined) {
+      restoreInlineStyle(element, "overflow", state.overflow);
+      restoreInlineStyle(element, "overscroll-behavior", state.overscrollBehavior);
+      if (state.hadStyleAttribute === false && element.style.length === 0) {
+        element.removeAttribute("style");
+      }
+    }
+  }
+
+  function lockElement(element: HTMLElement): void {
+    let state = elementStates.get(element);
+    if (state === undefined) {
+      const locksScroll = element.tagName === "BODY";
+      state = {
+        inertAttribute: element.getAttribute("inert"),
+        inertProperty: "inert" in element ? element.inert : undefined,
+        ...(locksScroll
+          ? {
+              hadStyleAttribute: element.hasAttribute("style"),
+              overflow: readInlineStyle(element, "overflow"),
+              overscrollBehavior: readInlineStyle(element, "overscroll-behavior"),
+            }
+          : {}),
+      };
+      elementStates.set(element, state);
+      observer.observe(element, {
+        attributes: true,
+        attributeFilter: locksScroll ? ["inert", "style"] : ["inert"],
+      });
+    }
+
+    if (!element.hasAttribute("inert")) {
+      element.setAttribute("inert", "");
+    }
+    if ("inert" in element && !element.inert) {
+      element.inert = true;
+    }
+    if (state.overflow !== undefined) {
+      lockScroll(element);
+    }
+  }
+
+  function reconcile(): void {
+    if (released) {
+      return;
+    }
+
+    lockScroll(documentElement);
+    for (const [element, state] of elementStates) {
+      if (element.parentElement !== documentElement || element === host) {
+        restoreElement(element, state);
+        elementStates.delete(element);
+      }
+    }
+    for (const child of documentElement.children) {
+      if (child !== host && child instanceof HTMLElement) {
+        lockElement(child);
+      }
+    }
+  }
+
+  const Observer = targetDocument.defaultView?.MutationObserver ?? MutationObserver;
+  const observer = new Observer(reconcile);
+  observer.observe(documentElement, {
+    childList: true,
+    attributes: true,
+    attributeFilter: ["style"],
+  });
+  reconcile();
+
+  return () => {
+    if (released) {
+      return;
+    }
+
+    released = true;
+    observer.disconnect();
+    for (const [element, state] of elementStates) {
+      restoreElement(element, state);
+    }
+    elementStates.clear();
+    restoreInlineStyle(documentElement, "overflow", documentStyle.overflow);
+    restoreInlineStyle(documentElement, "overscroll-behavior", documentStyle.overscrollBehavior);
+    if (!documentStyle.hadAttribute && documentElement.style.length === 0) {
+      documentElement.removeAttribute("style");
+    }
+  };
+}
+
+const HEADER_SIGNALS = new Set(["cf-ray", "cf-cache-status", "cf-mitigated", "server: cloudflare"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isEvidence(value: unknown): boolean {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.kind === "header") {
+    return typeof value.signal === "string" && HEADER_SIGNALS.has(value.signal);
+  }
+  if (value.kind === "ip") {
+    return isNonEmptyString(value.ip) && isNonEmptyString(value.cidr);
+  }
+  return false;
+}
+
+function isIgnoreChoice(value: unknown): boolean {
+  if (!isRecord(value) || !isNonEmptyString(value.label) || !isRecord(value.rule)) {
+    return false;
+  }
+  return (
+    (value.rule.scope === "host" || value.rule.scope === "site") &&
+    isNonEmptyString(value.rule.value)
+  );
+}
+
+function isNoticeState(value: unknown): value is NoticeState {
+  if (
+    !isRecord(value) ||
+    !isNonEmptyString(value.navigationId) ||
+    !isNonEmptyString(value.siteHost) ||
+    !Array.isArray(value.evidence) ||
+    !Array.from(value.evidence).every(isEvidence) ||
+    !Array.isArray(value.ignoreChoices) ||
+    !Array.from(value.ignoreChoices).every(isIgnoreChoice)
+  ) {
     return false;
   }
 
-  const candidate = value as Partial<HandshakeData>;
+  if (value.kind === "direct") {
+    return (
+      (value.mode === "overlay" || value.mode === "banner") &&
+      (value.resourceHost === undefined || isNonEmptyString(value.resourceHost))
+    );
+  }
   return (
-    (candidate.navigationId === null || typeof candidate.navigationId === "string") &&
-    (candidate.notice === null || typeof candidate.notice === "object")
+    value.kind === "content" && value.mode === "banner" && isNonEmptyString(value.resourceHost)
+  );
+}
+
+function isHandshakeData(value: unknown): value is HandshakeData {
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (value.navigationId === null) {
+    return value.notice === null;
+  }
+  return (
+    isNonEmptyString(value.navigationId) &&
+    (value.notice === null ||
+      (isNoticeState(value.notice) && value.notice.navigationId === value.navigationId))
   );
 }
 
 function isRuntimePush(value: unknown): value is RuntimePush {
-  if (typeof value !== "object" || value === null) {
+  if (!isRecord(value)) {
     return false;
   }
-
-  const candidate = value as Partial<RuntimePush>;
   return (
-    candidate.type === "notice/update" &&
-    typeof candidate.navigationId === "string" &&
-    (candidate.notice === null || typeof candidate.notice === "object")
+    value.type === "notice/update" &&
+    isNonEmptyString(value.navigationId) &&
+    (value.notice === null ||
+      (isNoticeState(value.notice) && value.notice.navigationId === value.navigationId))
   );
 }
 
@@ -82,6 +292,7 @@ export function createNoticeRuntime(dependencies: NoticeRuntimeDependencies) {
   let overlayRestoreTarget: Element | null = null;
   let pageFocusBeforeHost: Element | null = null;
   let unsubscribe: (() => void) | undefined;
+  let deactivateOverlay: (() => void) | undefined;
   let startPromise: Promise<void> | undefined;
   let ready = false;
   let stopped = false;
@@ -95,19 +306,28 @@ export function createNoticeRuntime(dependencies: NoticeRuntimeDependencies) {
     }
   }
 
+  function releaseOverlay(): void {
+    const release = deactivateOverlay;
+    deactivateOverlay = undefined;
+    release?.();
+  }
+
   function removeRenderedNotice(): void {
     const shouldRestore = currentNotice?.mode === "overlay";
 
-    if (mountedHost !== null) {
-      dependencies.removeHost(mountedHost);
+    try {
+      if (mountedHost !== null) {
+        dependencies.removeHost(mountedHost);
+      }
+    } finally {
       mountedHost = null;
-    }
+      currentNotice = null;
+      pageFocusBeforeHost = null;
+      releaseOverlay();
 
-    currentNotice = null;
-    pageFocusBeforeHost = null;
-
-    if (shouldRestore) {
-      restoreOverlayFocus();
+      if (shouldRestore) {
+        restoreOverlayFocus();
+      }
     }
   }
 
@@ -126,10 +346,21 @@ export function createNoticeRuntime(dependencies: NoticeRuntimeDependencies) {
       mountedHost = dependencies.createHost();
     }
 
-    dependencies.renderNotice(mountedHost, notice, performAction);
+    if (enteringOverlay) {
+      deactivateOverlay = dependencies.activateOverlay(mountedHost);
+    }
+    try {
+      dependencies.renderNotice(mountedHost, notice, performAction);
+    } catch (error) {
+      if (enteringOverlay) {
+        releaseOverlay();
+      }
+      throw error;
+    }
     currentNotice = notice;
 
     if (wasOverlay && notice.mode !== "overlay") {
+      releaseOverlay();
       restoreOverlayFocus();
     }
   }
@@ -146,21 +377,31 @@ export function createNoticeRuntime(dependencies: NoticeRuntimeDependencies) {
   }
 
   function receiveMessage(message: unknown): void {
-    if (stopped || !ready || activeNavigationId === null || !isRuntimePush(message)) {
+    if (stopped || !ready || activeNavigationId === null) {
       return;
     }
 
-    if (message.navigationId !== activeNavigationId) {
+    let push: RuntimePush;
+    try {
+      if (!isRuntimePush(message)) {
+        return;
+      }
+      push = message;
+    } catch {
       return;
     }
 
-    if (message.notice === null) {
+    if (push.navigationId !== activeNavigationId) {
+      return;
+    }
+
+    if (push.notice === null) {
       removeRenderedNotice();
       return;
     }
 
-    if (message.notice.navigationId === activeNavigationId) {
-      showNotice(message.notice);
+    if (push.notice.navigationId === activeNavigationId) {
+      showNotice(push.notice);
     }
   }
 
@@ -251,6 +492,7 @@ export default defineContentScript({
         render(null, mount);
         host.remove();
       },
+      activateOverlay: ({ host }) => createOverlayPageGuard(document, host),
       getActiveElement: () => document.activeElement,
       restoreFocus: (target) => {
         if (target instanceof HTMLElement) {

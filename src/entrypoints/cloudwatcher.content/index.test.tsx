@@ -1,3 +1,4 @@
+import { waitFor } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HandshakeData, RuntimeResponse } from "../../core/messages";
 import type { NoticeState } from "../../core/model";
@@ -59,6 +60,117 @@ const contentNotice: NoticeState = {
   resourceHost: "cdn.example.net",
 };
 
+const directBannerNotice: NoticeState = {
+  ...directNotice,
+  mode: "banner",
+};
+
+function sparseArray(): unknown[] {
+  const values: unknown[] = [];
+  values.length = 1;
+  return values;
+}
+
+const malformedNotices: Array<{ label: string; notice: unknown }> = [
+  { label: "missing fields", notice: {} },
+  { label: "unknown kind", notice: { ...directNotice, kind: "future" } },
+  { label: "unknown mode", notice: { ...directNotice, mode: "toast" } },
+  {
+    label: "content overlay combination",
+    notice: { ...contentNotice, mode: "overlay" },
+  },
+  {
+    label: "content without a resource host",
+    notice: { ...contentNotice, resourceHost: undefined },
+  },
+  { label: "empty navigation ID", notice: { ...directNotice, navigationId: "" } },
+  { label: "empty site host", notice: { ...directNotice, siteHost: "" } },
+  { label: "non-string resource host", notice: { ...contentNotice, resourceHost: 7 } },
+  { label: "non-array evidence", notice: { ...directNotice, evidence: {} } },
+  { label: "sparse evidence", notice: { ...directNotice, evidence: sparseArray() } },
+  {
+    label: "unknown header evidence",
+    notice: { ...directNotice, evidence: [{ kind: "header", signal: "cf-future" }] },
+  },
+  {
+    label: "incomplete IP evidence",
+    notice: { ...directNotice, evidence: [{ kind: "ip", ip: "203.0.113.7" }] },
+  },
+  { label: "non-array ignore choices", notice: { ...directNotice, ignoreChoices: {} } },
+  {
+    label: "sparse ignore choices",
+    notice: { ...directNotice, ignoreChoices: sparseArray() },
+  },
+  {
+    label: "non-string ignore label",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [{ label: 7, rule: { scope: "host", value: "shop.example.com" } }],
+    },
+  },
+  {
+    label: "unknown ignore scope",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [
+        { label: "shop.example.com only", rule: { scope: "domain", value: "example.com" } },
+      ],
+    },
+  },
+  {
+    label: "empty ignore value",
+    notice: {
+      ...directNotice,
+      ignoreChoices: [{ label: "shop.example.com only", rule: { scope: "host", value: "" } }],
+    },
+  },
+];
+
+const malformedHandshakeData: Array<{ label: string; data: unknown }> = [
+  { label: "missing handshake fields", data: {} },
+  { label: "numeric handshake navigation ID", data: { navigationId: 7, notice: null } },
+  { label: "empty handshake navigation ID", data: { navigationId: "", notice: null } },
+  {
+    label: "notice paired with a null navigation ID",
+    data: { navigationId: null, notice: directNotice },
+  },
+  {
+    label: "mismatched inner navigation ID",
+    data: {
+      navigationId: "nav-current",
+      notice: { ...directNotice, navigationId: "nav-other" },
+    },
+  },
+  ...malformedNotices.map(({ label, notice }) => ({
+    label: `${label} in handshake`,
+    data: { navigationId: "nav-current", notice },
+  })),
+];
+
+const malformedPushes: Array<{ label: string; message: unknown }> = [
+  { label: "null message", message: null },
+  { label: "missing push fields", message: {} },
+  {
+    label: "throwing record",
+    message: new Proxy(
+      {},
+      {
+        get() {
+          throw new Error("malformed message getter");
+        },
+      },
+    ),
+  },
+  {
+    label: "numeric outer navigation ID",
+    message: { type: "notice/update", navigationId: 7, notice: directNotice },
+  },
+  ...malformedNotices.map(({ label, notice }) => ({
+    label: `${label} in push`,
+    message: { type: "notice/update", navigationId: "nav-current", notice },
+  })),
+];
+
 function success(data: HandshakeData): RuntimeResponse<HandshakeData> {
   return { ok: true, data };
 }
@@ -72,7 +184,9 @@ function deferred<T>() {
 }
 
 interface RuntimeHarness {
+  activateOverlay: ReturnType<typeof vi.fn<(host: NoticeRuntimeHost) => () => void>>;
   createHost: ReturnType<typeof vi.fn<() => NoticeRuntimeHost>>;
+  deactivateOverlay: ReturnType<typeof vi.fn>;
   get listener(): ((message: unknown) => void) | undefined;
   removeHost: ReturnType<typeof vi.fn<(host: NoticeRuntimeHost) => void>>;
   renderNotice: ReturnType<typeof vi.fn<NoticeRuntimeDependencies["renderNotice"]>>;
@@ -83,7 +197,7 @@ interface RuntimeHarness {
 }
 
 function createHarness(
-  handshake: Promise<RuntimeResponse<HandshakeData>>,
+  handshake: Promise<RuntimeResponse<unknown>>,
   actionResponse: () => RuntimeResponse<unknown> = () => ({ ok: true, data: undefined }),
 ): RuntimeHarness {
   let listener: ((message: unknown) => void) | undefined;
@@ -108,6 +222,8 @@ function createHarness(
   });
   const renderNotice = vi.fn<NoticeRuntimeDependencies["renderNotice"]>();
   const removeHost = vi.fn<(host: NoticeRuntimeHost) => void>(({ host }) => host.remove());
+  const deactivateOverlay = vi.fn();
+  const activateOverlay = vi.fn<(host: NoticeRuntimeHost) => () => void>(() => deactivateOverlay);
   const restoreFocus = vi.fn<(target: Element) => void>((target) => {
     if (target instanceof HTMLElement) {
       target.focus();
@@ -120,12 +236,15 @@ function createHarness(
     createHost,
     renderNotice,
     removeHost,
+    activateOverlay,
     getActiveElement: () => document.activeElement,
     restoreFocus,
   });
 
   return {
+    activateOverlay,
     createHost,
+    deactivateOverlay,
     get listener() {
       return listener;
     },
@@ -138,8 +257,26 @@ function createHarness(
   };
 }
 
+function startDefaultRuntime(data: HandshakeData): () => void {
+  entrypoint.sendMessage.mockResolvedValue(success(data));
+  let invalidate: () => void = () => undefined;
+  const main = contentScript.main as unknown as (context: {
+    onInvalidated: (callback: () => void) => () => void;
+  }) => void;
+  main({
+    onInvalidated(callback) {
+      invalidate = callback;
+      return () => undefined;
+    },
+  });
+  return () => invalidate();
+}
+
 afterEach(() => {
-  document.body.replaceChildren();
+  if (document.body === null) {
+    document.documentElement.append(document.createElement("body"));
+  }
+  document.body?.replaceChildren();
   for (const host of document.querySelectorAll("cloudwatcher-notice")) {
     host.remove();
   }
@@ -166,6 +303,94 @@ describe("content script definition", () => {
     expect(created.root.mode).toBe("closed");
     expect(created.root.querySelector("style")).toHaveTextContent(":host { position: fixed; }");
     expect(created.root.lastElementChild).toBe(created.mount);
+  });
+
+  it("inerts and scroll-locks bodies that appear or replace while an overlay is rendered", async () => {
+    document.body?.remove();
+    document.documentElement.style.setProperty("overflow", "visible", "important");
+    document.documentElement.style.setProperty("overscroll-behavior", "contain");
+    document.head?.setAttribute("inert", "page-owned");
+    const invalidate = startDefaultRuntime({
+      navigationId: "nav-current",
+      notice: directNotice,
+    });
+
+    try {
+      await waitFor(() => expect(document.querySelectorAll("cloudwatcher-notice")).toHaveLength(1));
+      expect(document.body).toBeNull();
+      expect(document.documentElement.style.getPropertyValue("overflow")).toBe("hidden");
+      expect(document.documentElement.style.getPropertyPriority("overflow")).toBe("important");
+      expect(document.documentElement.style.getPropertyValue("overscroll-behavior")).toBe("none");
+
+      const firstBody = document.createElement("body");
+      document.documentElement.append(firstBody);
+
+      await waitFor(() => expect(firstBody).toHaveAttribute("inert"));
+      expect(firstBody.style.getPropertyValue("overflow")).toBe("hidden");
+      expect(firstBody.style.getPropertyPriority("overflow")).toBe("important");
+      expect(firstBody.style.getPropertyValue("overscroll-behavior")).toBe("none");
+
+      const replacementBody = document.createElement("body");
+      replacementBody.setAttribute("inert", "replacement-owned");
+      replacementBody.style.setProperty("overflow", "scroll");
+      replacementBody.style.setProperty("overscroll-behavior", "auto", "important");
+      firstBody.replaceWith(replacementBody);
+
+      await waitFor(() =>
+        expect(replacementBody.style.getPropertyValue("overflow")).toBe("hidden"),
+      );
+      expect(firstBody).not.toHaveAttribute("inert");
+      expect(firstBody.style.getPropertyValue("overflow")).toBe("");
+      expect(firstBody.style.getPropertyValue("overscroll-behavior")).toBe("");
+      expect(firstBody).not.toHaveAttribute("style");
+
+      invalidate();
+
+      expect(replacementBody.getAttribute("inert")).toBe("replacement-owned");
+      expect(replacementBody.style.getPropertyValue("overflow")).toBe("scroll");
+      expect(replacementBody.style.getPropertyValue("overscroll-behavior")).toBe("auto");
+      expect(replacementBody.style.getPropertyPriority("overscroll-behavior")).toBe("important");
+      expect(document.documentElement.style.getPropertyValue("overflow")).toBe("visible");
+      expect(document.documentElement.style.getPropertyPriority("overflow")).toBe("important");
+      expect(document.documentElement.style.getPropertyValue("overscroll-behavior")).toBe(
+        "contain",
+      );
+      expect(document.head?.getAttribute("inert")).toBe("page-owned");
+      expect(document.querySelector("cloudwatcher-notice")).not.toBeInTheDocument();
+    } finally {
+      invalidate();
+      document.documentElement.style.removeProperty("overflow");
+      document.documentElement.style.removeProperty("overscroll-behavior");
+      document.head?.removeAttribute("inert");
+      document.body?.removeAttribute("inert");
+      document.body?.style.removeProperty("overflow");
+      document.body?.style.removeProperty("overscroll-behavior");
+    }
+  });
+
+  it("leaves page interactivity, scroll styles, and focus untouched for a direct banner", async () => {
+    const pageButton = document.createElement("button");
+    pageButton.textContent = "Page control";
+    document.body.append(pageButton);
+    pageButton.focus();
+    document.documentElement.style.setProperty("overflow", "visible");
+    document.body.style.setProperty("overflow", "auto");
+    const invalidate = startDefaultRuntime({
+      navigationId: "nav-current",
+      notice: directBannerNotice,
+    });
+
+    try {
+      await waitFor(() => expect(document.querySelectorAll("cloudwatcher-notice")).toHaveLength(1));
+      expect(document.body).not.toHaveAttribute("inert");
+      expect(document.documentElement.style.getPropertyValue("overflow")).toBe("visible");
+      expect(document.body.style.getPropertyValue("overflow")).toBe("auto");
+      expect(pageButton).toHaveFocus();
+    } finally {
+      invalidate();
+      document.documentElement.style.removeProperty("overflow");
+      document.body.style.removeProperty("overflow");
+    }
   });
 });
 
@@ -219,6 +444,65 @@ describe("createNoticeRuntime", () => {
     );
   });
 
+  it("activates an overlay guard once and releases it before focus on every exit path", async () => {
+    const pageButton = document.createElement("button");
+    document.body.append(pageButton);
+    pageButton.focus();
+    const harness = createHarness(
+      Promise.resolve(success({ navigationId: "nav-current", notice: directNotice })),
+    );
+
+    await harness.runtime.start();
+    expect(harness.activateOverlay).toHaveBeenCalledOnce();
+
+    harness.listener?.({
+      type: "notice/update",
+      navigationId: "nav-current",
+      notice: directNotice,
+    });
+    expect(harness.activateOverlay).toHaveBeenCalledOnce();
+
+    harness.listener?.({
+      type: "notice/update",
+      navigationId: "nav-current",
+      notice: directBannerNotice,
+    });
+    expect(harness.deactivateOverlay).toHaveBeenCalledOnce();
+    expect(harness.deactivateOverlay.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.restoreFocus.mock.invocationCallOrder[0] ?? 0,
+    );
+
+    harness.listener?.({
+      type: "notice/update",
+      navigationId: "nav-current",
+      notice: directNotice,
+    });
+    expect(harness.activateOverlay).toHaveBeenCalledTimes(2);
+
+    harness.listener?.({
+      type: "notice/update",
+      navigationId: "nav-current",
+      notice: null,
+    });
+    expect(harness.deactivateOverlay).toHaveBeenCalledTimes(2);
+    expect(harness.deactivateOverlay.mock.invocationCallOrder[1]).toBeLessThan(
+      harness.restoreFocus.mock.invocationCallOrder[1] ?? 0,
+    );
+
+    harness.listener?.({
+      type: "notice/update",
+      navigationId: "nav-current",
+      notice: directNotice,
+    });
+    harness.runtime.stop();
+    harness.runtime.stop();
+    expect(harness.activateOverlay).toHaveBeenCalledTimes(3);
+    expect(harness.deactivateOverlay).toHaveBeenCalledTimes(3);
+    expect(harness.deactivateOverlay.mock.invocationCallOrder[2]).toBeLessThan(
+      harness.restoreFocus.mock.invocationCallOrder[2] ?? 0,
+    );
+  });
+
   it("does not accept updates after a failed or navigation-less handshake", async () => {
     const failed = createHarness(Promise.resolve({ ok: false, error: "not ready" }));
     await failed.runtime.start();
@@ -239,6 +523,51 @@ describe("createNoticeRuntime", () => {
       notice: directNotice,
     });
     expect(noNavigation.renderNotice).not.toHaveBeenCalled();
+  });
+
+  it.each(malformedHandshakeData)(
+    "keeps $label inert and does not arm later pushes",
+    async ({ data }) => {
+      const harness = createHarness(Promise.resolve({ ok: true, data }));
+
+      await expect(harness.runtime.start()).resolves.toBeUndefined();
+      expect(harness.createHost).not.toHaveBeenCalled();
+      expect(harness.renderNotice).not.toHaveBeenCalled();
+
+      expect(() =>
+        harness.listener?.({
+          type: "notice/update",
+          navigationId: "nav-current",
+          notice: directNotice,
+        }),
+      ).not.toThrow();
+      expect(harness.renderNotice).not.toHaveBeenCalled();
+    },
+  );
+
+  it("ignores malformed and version-skewed pushes without throwing, then accepts a valid push", async () => {
+    const harness = createHarness(
+      Promise.resolve(success({ navigationId: "nav-current", notice: null })),
+    );
+    await harness.runtime.start();
+
+    for (const { message } of malformedPushes) {
+      expect(() => harness.listener?.(message)).not.toThrow();
+    }
+    expect(harness.createHost).not.toHaveBeenCalled();
+    expect(harness.renderNotice).not.toHaveBeenCalled();
+
+    harness.listener?.({
+      type: "notice/update",
+      navigationId: "nav-current",
+      notice: contentNotice,
+    });
+    expect(harness.renderNotice).toHaveBeenCalledOnce();
+    expect(harness.renderNotice).toHaveBeenCalledWith(
+      expect.any(Object),
+      contentNotice,
+      expect.any(Function),
+    );
   });
 
   it("removes a null notice and restores focus captured before an overlay", async () => {

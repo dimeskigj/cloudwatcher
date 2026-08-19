@@ -52,6 +52,11 @@ const contentNotice: NoticeState = {
   ],
 };
 
+const directBannerNotice: NoticeState = {
+  ...directNotice,
+  mode: "banner",
+};
+
 function resolvedAction() {
   return vi.fn<(action: NoticeAction) => Promise<void>>().mockResolvedValue(undefined);
 }
@@ -125,10 +130,26 @@ describe("Notice content and semantics", () => {
     expect(document.activeElement).toBe(pageButton);
   });
 
+  it("uses direct copy and status semantics in a non-modal direct banner without autofocus", () => {
+    const pageButton = addPageButton();
+
+    render(<Notice notice={directBannerNotice} onAction={resolvedAction()} />);
+
+    const banner = screen.getByRole("region", { name: "Cloudflare detected for this site" });
+    expect(banner).not.toHaveAttribute("aria-modal");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(within(banner).getByRole("status")).toHaveTextContent(
+      "Cloudwatcher observed a Cloudflare signal while this site loaded.",
+    );
+    expect(within(banner).queryByText("Observed host")).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(pageButton);
+  });
+
   it.each([
-    ["overlay", directNotice],
-    ["banner", contentNotice],
-  ] as const)("has no serious or critical axe violations in %s mode", async (_mode, notice) => {
+    ["direct overlay", directNotice],
+    ["direct banner", directBannerNotice],
+    ["content banner", contentNotice],
+  ] as const)("has no serious or critical axe violations for the %s", async (_mode, notice) => {
     const { container } = render(<Notice notice={notice} onAction={resolvedAction()} />);
 
     const results = await axe.run(container, {
@@ -246,21 +267,27 @@ describe("Notice keyboard behavior", () => {
     expect(onAction).toHaveBeenCalledWith({ type: "continue" });
   });
 
-  it("does not autofocus or capture page Escape for a banner, but handles Escape inside it", async () => {
-    const user = userEvent.setup();
-    const pageButton = addPageButton();
-    const onAction = resolvedAction();
-    render(<Notice notice={contentNotice} onAction={onAction} />);
+  it.each([
+    ["direct", directBannerNotice],
+    ["content", contentNotice],
+  ] as const)(
+    "does not autofocus or capture page Escape for a %s banner, but handles focused Escape",
+    async (_kind, notice) => {
+      const user = userEvent.setup();
+      const pageButton = addPageButton();
+      const onAction = resolvedAction();
+      render(<Notice notice={notice} onAction={onAction} />);
 
-    expect(pageButton).toHaveFocus();
-    await user.keyboard("{Escape}");
-    expect(onAction).not.toHaveBeenCalled();
+      expect(pageButton).toHaveFocus();
+      await user.keyboard("{Escape}");
+      expect(onAction).not.toHaveBeenCalled();
 
-    screen.getByRole("button", { name: "Go back" }).focus();
-    await user.keyboard("{Escape}");
-    expect(onAction).toHaveBeenCalledOnce();
-    expect(onAction).toHaveBeenCalledWith({ type: "continue" });
-  });
+      screen.getByRole("button", { name: "Go back" }).focus();
+      await user.keyboard("{Escape}");
+      expect(onAction).toHaveBeenCalledOnce();
+      expect(onAction).toHaveBeenCalledWith({ type: "continue" });
+    },
+  );
 
   it("distinguishes internal focus from escaped focus inside a closed shadow root", async () => {
     const pageButton = addPageButton();
@@ -301,21 +328,40 @@ describe("Notice keyboard behavior", () => {
     expect(root.activeElement).toBe(continueButton);
   });
 
-  it("keeps overlay keyboard events from reaching the page", async () => {
-    const pageKeydown = vi.fn();
-    document.addEventListener("keydown", pageKeydown);
+  it("handles overlay Escape even though a page capture listener observes the key", async () => {
+    const user = userEvent.setup();
+    const pageCapture = vi.fn();
+    const onAction = resolvedAction();
+    document.addEventListener("keydown", pageCapture, true);
 
     try {
-      render(<Notice notice={directNotice} onAction={resolvedAction()} />);
+      render(<Notice notice={directNotice} onAction={onAction} />);
       const continueButton = screen.getByRole("button", { name: "Continue once" });
       await waitFor(() => expect(continueButton).toHaveFocus());
 
-      fireEvent.keyDown(continueButton, { key: "x" });
+      await user.keyboard("{Escape}");
 
-      expect(pageKeydown).not.toHaveBeenCalled();
+      expect(pageCapture).toHaveBeenCalled();
+      expect(onAction).toHaveBeenCalledWith({ type: "continue" });
     } finally {
-      document.removeEventListener("keydown", pageKeydown);
+      document.removeEventListener("keydown", pageCapture, true);
     }
+  });
+
+  it("preserves native Enter and Space activation inside the overlay", async () => {
+    const user = userEvent.setup();
+    const onAction = resolvedAction();
+    render(<Notice notice={directNotice} onAction={onAction} />);
+    const continueButton = screen.getByRole("button", { name: "Continue once" });
+    const goBackButton = screen.getByRole("button", { name: "Go back" });
+
+    await waitFor(() => expect(continueButton).toHaveFocus());
+    await user.keyboard("{Enter}");
+    goBackButton.focus();
+    await user.keyboard("[Space]");
+
+    expect(onAction).toHaveBeenNthCalledWith(1, { type: "continue" });
+    expect(onAction).toHaveBeenNthCalledWith(2, { type: "leave" });
   });
 });
 
@@ -333,6 +379,25 @@ describe("notice stylesheet contract", () => {
       /@media \(prefers-color-scheme: dark\)[\s\S]*--cw-focus:\s*oklch\(0\.56 0\.18 28\.3\)/,
     );
     expect(noticeCss).toMatch(/:focus-visible\s*{[^}]*outline:\s*2px\s+solid\s+var\(--cw-focus\)/s);
+    expect(noticeCss).toMatch(/--cw-control-border:\s*oklch\(0\.62 0 0\)/);
+    expect(noticeCss).toMatch(
+      /@media \(prefers-color-scheme: dark\)[\s\S]*--cw-control-border:\s*oklch\(0\.52 0 0\)/,
+    );
+    expect(noticeCss).toMatch(
+      /\.notice__button\s*{[^}]*min-height:\s*44px[^}]*border:\s*1px\s+solid\s+var\(--cw-control-border\)/s,
+    );
+    expect(noticeCss).toMatch(
+      /\.notice__button--quiet\s*{[^}]*border-color:\s*var\(--cw-control-border\)/s,
+    );
+    expect(noticeCss).toMatch(
+      /\.notice__button--primary\s*{[^}]*border-color:\s*var\(--cw-focus\)/s,
+    );
+    expect(noticeCss).toMatch(
+      /\.notice__button:not\(:disabled\):active\s*{[^}]*border-color:\s*var\(--cw-muted\)/s,
+    );
+    expect(noticeCss).toMatch(
+      /\.notice__button--primary:not\(:disabled\):(?:hover|active)\s*{[^}]*border-color:\s*var\(--cw-focus\)/s,
+    );
   });
 
   it("keeps banner hit testing local and defines narrow, dark, and reduced-motion behavior", () => {
@@ -341,5 +406,9 @@ describe("notice stylesheet contract", () => {
     expect(noticeCss).toContain("@media (max-width: 640px)");
     expect(noticeCss).toContain("@media (prefers-color-scheme: dark)");
     expect(noticeCss).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(noticeCss).toMatch(/\.notice--overlay\s*{[^}]*overscroll-behavior:\s*none/s);
+    expect(noticeCss).toMatch(
+      /\.notice--overlay\s+\.notice__panel\s*{[^}]*overscroll-behavior:\s*none/s,
+    );
   });
 });
