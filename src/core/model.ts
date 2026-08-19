@@ -51,6 +51,8 @@ export interface NavigationState {
   counted: Record<DetectionCategory, boolean>;
   dismissed: Record<DetectionCategory, boolean>;
   eligible: Record<DetectionCategory, boolean>;
+  ignoreRuleSnapshot: IgnoreRule[];
+  explicitlySuppressed: boolean;
   suppressedForNavigation: boolean;
 }
 

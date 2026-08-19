@@ -527,6 +527,163 @@ describe("BackgroundController messages and actions", () => {
     expect(adapter.sent).toEqual([]);
   });
 
+  it("rejects ignore when the navigation has no detection notice", async () => {
+    const { adapter, controller, repository } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+
+    await expect(
+      controller.handleMessage(
+        {
+          type: "notice/ignore",
+          navigationId: "nav-1",
+          rule: { scope: "host", value: "shop.example.com" },
+        },
+        sender(),
+      ),
+    ).resolves.toMatchObject({ ok: false });
+
+    expect((await repository.getOptionsSnapshot()).ignoreRules).toEqual([]);
+    expect(adapter.sent).toEqual([]);
+  });
+
+  it("rejects ignore when the detected category is off", async () => {
+    const { adapter, controller, repository } = await createHarness({
+      settings: { directNoticeMode: "off", contentNoticeMode: "banner" },
+    });
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+
+    await expect(
+      controller.handleMessage(
+        {
+          type: "notice/ignore",
+          navigationId: "nav-1",
+          rule: { scope: "site", value: "example.com" },
+        },
+        sender(),
+      ),
+    ).resolves.toMatchObject({ ok: false });
+
+    expect((await repository.getOptionsSnapshot()).ignoreRules).toEqual([]);
+    expect(adapter.sent).toEqual([]);
+  });
+
+  it("rejects ignore when the navigation is already suppressed by a rule", async () => {
+    const existingRule = { scope: "site", value: "example.com" } as const;
+    const { adapter, controller, repository } = await createHarness({
+      ignoreRules: [existingRule],
+    });
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+
+    await expect(
+      controller.handleMessage(
+        {
+          type: "notice/ignore",
+          navigationId: "nav-1",
+          rule: { scope: "host", value: "shop.example.com" },
+        },
+        sender(),
+      ),
+    ).resolves.toMatchObject({ ok: false });
+
+    expect((await repository.getOptionsSnapshot()).ignoreRules).toEqual([existingRule]);
+    expect(adapter.sent).toEqual([]);
+  });
+
+  it("rejects ignore after the active notice is dismissed", async () => {
+    const { adapter, controller, repository } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    await controller.handleMessage({ type: "notice/continue", navigationId: "nav-1" }, sender());
+    adapter.sent.length = 0;
+
+    await expect(
+      controller.handleMessage(
+        {
+          type: "notice/ignore",
+          navigationId: "nav-1",
+          rule: { scope: "site", value: "example.com" },
+        },
+        sender(),
+      ),
+    ).resolves.toMatchObject({ ok: false });
+
+    expect((await repository.getOptionsSnapshot()).ignoreRules).toEqual([]);
+    expect(adapter.sent).toEqual([]);
+  });
+
+  it("keeps explicit suppression sticky when an ignore write and redirect overlap", async () => {
+    const { controller, navigationStore, repository } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    const persistRule = repository.addIgnoreRule.bind(repository);
+    let markWriteStarted: () => void = () => undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    let releaseWrite: () => void = () => undefined;
+    const writeCanFinish = new Promise<void>((resolve) => {
+      releaseWrite = resolve;
+    });
+    vi.spyOn(repository, "addIgnoreRule").mockImplementationOnce(async (rule) => {
+      markWriteStarted();
+      await writeCanFinish;
+      return persistRule(rule);
+    });
+
+    const ignoring = controller.handleMessage(
+      {
+        type: "notice/ignore",
+        navigationId: "nav-1",
+        rule: { scope: "site", value: "example.com" },
+      },
+      sender(),
+    );
+    await writeStarted;
+    const redirecting = controller.handleBeforeRequest(
+      beforeRequest({ url: "https://account.example.net/final" }),
+    );
+    releaseWrite();
+
+    await expect(Promise.all([ignoring, redirecting])).resolves.toEqual([
+      { ok: true, data: undefined },
+      undefined,
+    ]);
+    expect(await navigationStore.get(8)).toMatchObject({
+      topLevelUrl: "https://account.example.net/final",
+      explicitlySuppressed: true,
+      suppressedForNavigation: true,
+    });
+  });
+
+  it("retains the navigation rule snapshot when removal and redirect overlap", async () => {
+    const rule = { scope: "site", value: "example.com" } as const;
+    const { controller, navigationStore, repository } = await createHarness({
+      ignoreRules: [rule],
+    });
+    await controller.handleBeforeRequest(beforeRequest());
+
+    const removing = controller.handleMessage({ type: "options/remove-ignore", rule }, {});
+    const redirecting = controller.handleBeforeRequest(
+      beforeRequest({ url: "https://account.example.com/final" }),
+    );
+
+    await expect(Promise.all([removing, redirecting])).resolves.toEqual([
+      { ok: true, data: [] },
+      undefined,
+    ]);
+    expect((await repository.getOptionsSnapshot()).ignoreRules).toEqual([]);
+    expect(await navigationStore.get(8)).toMatchObject({
+      topLevelUrl: "https://account.example.com/final",
+      ignoreRuleSnapshot: [rule],
+      explicitlySuppressed: false,
+      suppressedForNavigation: true,
+    });
+  });
+
   it("persists an explicit ignore selected in a private tab without adding activity", async () => {
     const { controller, repository } = await createHarness();
     await controller.handleBeforeRequest(beforeRequest({ incognito: true }));
@@ -733,6 +890,87 @@ describe("BackgroundController messages and actions", () => {
     await controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" }));
     await controller.handleResponseStarted(responseStarted({ requestId: "main-2" }));
     expect(adapter.sent.at(-1)?.message.notice).toMatchObject({ kind: "direct", mode: "overlay" });
+  });
+
+  it("serializes concurrent direct presentation changes through their notice pushes", async () => {
+    const { adapter, controller } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+    const bannerSettings: Settings = {
+      directNoticeMode: "banner",
+      contentNoticeMode: "banner",
+    };
+
+    const banner = controller.handleMessage(
+      { type: "options/update-settings", settings: bannerSettings },
+      {},
+    );
+    const overlay = controller.handleMessage(
+      { type: "options/update-settings", settings: DEFAULT_SETTINGS },
+      {},
+    );
+
+    await expect(Promise.all([banner, overlay])).resolves.toEqual([
+      { ok: true, data: bannerSettings },
+      { ok: true, data: DEFAULT_SETTINGS },
+    ]);
+    expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual(["banner", "overlay"]);
+  });
+
+  it("orders a delayed navigation start before disabling settings without rearming it", async () => {
+    const { adapter, controller, navigationStore, repository } = await createHarness();
+    const persistSession = fakeBrowser.storage.session.set.bind(fakeBrowser.storage.session);
+    let markNavigationWriteStarted: () => void = () => undefined;
+    const navigationWriteStarted = new Promise<void>((resolve) => {
+      markNavigationWriteStarted = resolve;
+    });
+    let releaseNavigationWrite: () => void = () => undefined;
+    const navigationWriteCanFinish = new Promise<void>((resolve) => {
+      releaseNavigationWrite = resolve;
+    });
+    let delayFirstNavigationWrite = true;
+    const operationOrder: string[] = [];
+    vi.spyOn(fakeBrowser.storage.session, "set").mockImplementation(async (items) => {
+      if (delayFirstNavigationWrite && Object.hasOwn(items, "navigation:8")) {
+        delayFirstNavigationWrite = false;
+        markNavigationWriteStarted();
+        await navigationWriteCanFinish;
+        operationOrder.push("navigation-start");
+      }
+
+      await persistSession(items);
+    });
+    const persistSettings = repository.updateSettings.bind(repository);
+    vi.spyOn(repository, "updateSettings").mockImplementation((settings) => {
+      operationOrder.push("settings-off");
+      return persistSettings(settings);
+    });
+
+    const starting = controller.handleBeforeRequest(beforeRequest());
+    await navigationWriteStarted;
+    const disabling = controller.handleMessage(
+      {
+        type: "options/update-settings",
+        settings: { directNoticeMode: "off", contentNoticeMode: "banner" },
+      },
+      {},
+    );
+    await Promise.resolve();
+    releaseNavigationWrite();
+
+    await Promise.all([starting, disabling]);
+    expect(operationOrder).toEqual(["navigation-start", "settings-off"]);
+    expect(await navigationStore.get(8)).toMatchObject({ eligible: { direct: false } });
+
+    await controller.handleMessage(
+      { type: "options/update-settings", settings: DEFAULT_SETTINGS },
+      {},
+    );
+    adapter.sent.length = 0;
+    await controller.handleResponseStarted(responseStarted());
+
+    expect(adapter.sent.at(-1)?.message.notice).toBeNull();
   });
 
   it("keeps a removed ignore effective until the next main-frame navigation", async () => {

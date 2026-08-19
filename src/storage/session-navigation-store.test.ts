@@ -12,7 +12,7 @@ function navigation(tabId: number): NavigationState {
     url: `https://tab-${tabId}.example/`,
     incognito: false,
     settings: DEFAULT_SETTINGS,
-    ignored: false,
+    ignoreRules: [],
     navigationId: `navigation-${tabId}`,
   });
 }

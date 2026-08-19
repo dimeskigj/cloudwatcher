@@ -2,11 +2,12 @@ import {
   DEFAULT_SETTINGS,
   type DetectionCategory,
   type DetectionMatch,
+  type IgnoreRule,
   type NavigationState,
   type NoticeState,
   type Settings,
 } from "../core/model";
-import { getIgnoreChoices, getSiteIdentity } from "../core/site-identity";
+import { getIgnoreChoices, getSiteIdentity, isIgnored } from "../core/site-identity";
 
 interface DetectionApplication {
   state: NavigationState;
@@ -19,7 +20,7 @@ export function startNavigation({
   url,
   incognito,
   settings,
-  ignored,
+  ignoreRules,
   navigationId,
 }: {
   tabId: number;
@@ -27,15 +28,18 @@ export function startNavigation({
   url: string;
   incognito: boolean;
   settings: Settings;
-  ignored: boolean;
+  ignoreRules: readonly IgnoreRule[];
   navigationId: string;
 }): NavigationState {
+  const identity = getSiteIdentity(url);
+  const ignoreRuleSnapshot = ignoreRules.map((rule) => ({ ...rule }));
+
   return {
     tabId,
     requestId,
     navigationId,
     topLevelUrl: url,
-    identity: getSiteIdentity(url),
+    identity,
     incognito,
     counted: { direct: false, content: false },
     dismissed: { direct: false, content: false },
@@ -43,20 +47,26 @@ export function startNavigation({
       direct: settings.directNoticeMode !== "off",
       content: settings.contentNoticeMode !== "off",
     },
-    suppressedForNavigation: ignored,
+    ignoreRuleSnapshot,
+    explicitlySuppressed: false,
+    suppressedForNavigation: isIgnored(identity, ignoreRuleSnapshot),
   };
 }
 
-export function updateRedirectUrl(
-  state: NavigationState,
-  url: string,
-  ignored: boolean,
-): NavigationState {
+export function updateRedirectUrl(state: NavigationState, url: string): NavigationState {
+  const identity = getSiteIdentity(url);
+  const ignoreRuleSnapshot = state.ignoreRuleSnapshot ?? [];
+  const explicitlySuppressed = Object.hasOwn(state, "explicitlySuppressed")
+    ? state.explicitlySuppressed
+    : state.suppressedForNavigation;
+
   return {
     ...state,
     topLevelUrl: url,
-    identity: getSiteIdentity(url),
-    suppressedForNavigation: ignored,
+    identity,
+    ignoreRuleSnapshot,
+    explicitlySuppressed,
+    suppressedForNavigation: explicitlySuppressed || isIgnored(identity, ignoreRuleSnapshot),
   };
 }
 
@@ -162,7 +172,7 @@ export function dismissNotice(
 }
 
 export function suppressNavigation(state: NavigationState): NavigationState {
-  return { ...state, suppressedForNavigation: true };
+  return { ...state, explicitlySuppressed: true, suppressedForNavigation: true };
 }
 
 export function disableCategory(

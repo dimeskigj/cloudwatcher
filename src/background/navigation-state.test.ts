@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_SETTINGS, type DetectionMatch, type Settings } from "../core/model";
+import {
+  DEFAULT_SETTINGS,
+  type DetectionMatch,
+  type IgnoreRule,
+  type Settings,
+} from "../core/model";
 import {
   applyDetection,
   deriveNotice,
@@ -25,7 +30,7 @@ function start(
     url: string;
     incognito: boolean;
     settings: Settings;
-    ignored: boolean;
+    ignoreRules: IgnoreRule[];
     navigationId: string;
   }> = {},
 ) {
@@ -35,7 +40,7 @@ function start(
     url: "https://shop.example.com/",
     incognito: false,
     settings: DEFAULT_SETTINGS,
-    ignored: false,
+    ignoreRules: [],
     navigationId: "nav-1",
     ...overrides,
   });
@@ -48,7 +53,8 @@ describe("navigation state", () => {
       contentNoticeMode: "off",
     };
 
-    const first = start({ settings, ignored: true });
+    const ignoreRule = { scope: "site", value: "example.com" } as const;
+    const first = start({ settings, ignoreRules: [ignoreRule] });
     const second = start({ requestId: "r2", navigationId: "nav-2" });
 
     expect(first).toEqual({
@@ -65,6 +71,8 @@ describe("navigation state", () => {
       counted: { direct: false, content: false },
       dismissed: { direct: false, content: false },
       eligible: { direct: true, content: false },
+      ignoreRuleSnapshot: [ignoreRule],
+      explicitlySuppressed: false,
       suppressedForNavigation: true,
     });
     expect(second).toMatchObject({
@@ -73,6 +81,8 @@ describe("navigation state", () => {
       counted: { direct: false, content: false },
       dismissed: { direct: false, content: false },
       eligible: { direct: true, content: true },
+      ignoreRuleSnapshot: [],
+      explicitlySuppressed: false,
       suppressedForNavigation: false,
     });
   });
@@ -81,7 +91,10 @@ describe("navigation state", () => {
     const initial = start({
       url: "https://redirector.example/",
       settings: { directNoticeMode: "off", contentNoticeMode: "banner" },
-      ignored: true,
+      ignoreRules: [
+        { scope: "site", value: "redirector.example" },
+        { scope: "host", value: "ignored.test" },
+      ],
     });
     const detected = applyDetection(
       initial,
@@ -91,7 +104,7 @@ describe("navigation state", () => {
     ).state;
     const dismissed = dismissNotice(detected, "content");
 
-    const finalState = updateRedirectUrl(dismissed, "https://account.example.net/final", false);
+    const finalState = updateRedirectUrl(dismissed, "https://account.example.net/final");
 
     expect(finalState).toEqual({
       ...dismissed,
@@ -110,7 +123,7 @@ describe("navigation state", () => {
       match: headerMatch,
       resourceHost: "cdn.redirector.example",
     });
-    expect(updateRedirectUrl(finalState, "https://ignored.test/", true)).toMatchObject({
+    expect(updateRedirectUrl(finalState, "https://ignored.test/")).toMatchObject({
       identity: { hostname: "ignored.test", siteKey: "ignored.test" },
       suppressedForNavigation: true,
     });
@@ -212,9 +225,7 @@ describe("navigation state", () => {
       mode: "banner",
     });
     expect(deriveNotice(ineligible, bannerSettings)).toBeNull();
-    expect(updateRedirectUrl(ineligible, "https://final.example/", false).eligible.direct).toBe(
-      false,
-    );
+    expect(updateRedirectUrl(ineligible, "https://final.example/").eligible.direct).toBe(false);
   });
 
   it("keeps a dismissed category hidden for the current navigation", () => {
@@ -249,5 +260,14 @@ describe("navigation state", () => {
     expect(direct.shouldCount).toBe(true);
     expect(direct.state.suppressedForNavigation).toBe(true);
     expect(deriveNotice(direct.state)).toBeNull();
+  });
+
+  it("keeps explicit suppression sticky across a same-request redirect", () => {
+    const suppressed = suppressNavigation(start());
+
+    const redirected = updateRedirectUrl(suppressed, "https://account.example.net/final");
+
+    expect(redirected.suppressedForNavigation).toBe(true);
+    expect(deriveNotice(applyDetection(redirected, "direct", headerMatch).state)).toBeNull();
   });
 });

@@ -16,7 +16,7 @@ import {
   type SiteIdentity,
   type StorageSection,
 } from "../core/model";
-import { getIgnoreChoices, getSiteIdentity, isIgnored } from "../core/site-identity";
+import { getSiteIdentity, isIgnored } from "../core/site-identity";
 import type { LocalRepository } from "../storage/local-repository";
 import type { SessionNavigationStore } from "../storage/session-navigation-store";
 import type { BrowserAdapter } from "./browser-adapter";
@@ -119,6 +119,7 @@ function isSameRule(candidate: unknown, expected: IgnoreRule): boolean {
 
 export class BackgroundController {
   private initialization: Promise<void> | undefined;
+  private configurationQueue: Promise<unknown> = Promise.resolve();
   private settings: Settings = DEFAULT_SETTINGS;
   private ignoreRules: IgnoreRule[] = [];
   private ranges: CompiledCidr[] = [];
@@ -145,29 +146,28 @@ export class BackgroundController {
       return;
     }
 
-    const identity = supportedIdentity(details.url, TOP_LEVEL_PROTOCOLS);
-
-    if (identity === undefined) {
+    if (supportedIdentity(details.url, TOP_LEVEL_PROTOCOLS) === undefined) {
       return;
     }
 
     await this.initialize();
-    const ignored = isIgnored(identity, this.ignoreRules);
-    await this.navigationStore.update(details.tabId, async (current) => ({
-      state:
-        current?.requestId === details.requestId
-          ? updateRedirectUrl(current, details.url, ignored)
-          : startNavigation({
-              tabId: details.tabId,
-              requestId: details.requestId,
-              url: details.url,
-              incognito: details.incognito ?? false,
-              settings: this.settings,
-              ignored,
-              navigationId: this.createNavigationId(),
-            }),
-      value: undefined,
-    }));
+    await this.enqueueConfiguration(() =>
+      this.navigationStore.update(details.tabId, async (current) => ({
+        state:
+          current?.requestId === details.requestId
+            ? updateRedirectUrl(current, details.url)
+            : startNavigation({
+                tabId: details.tabId,
+                requestId: details.requestId,
+                url: details.url,
+                incognito: details.incognito ?? false,
+                settings: this.settings,
+                ignoreRules: this.ignoreRules,
+                navigationId: this.createNavigationId(),
+              }),
+        value: undefined,
+      })),
+    );
   }
 
   async handleResponseStarted(details: ResponseStartedDetails): Promise<void> {
@@ -257,11 +257,8 @@ export class BackgroundController {
           return success(await this.repository.getOptionsSnapshot());
         case "options/update-settings":
           return success(await this.updateSettings(message.settings));
-        case "options/remove-ignore": {
-          const rules = await this.repository.removeIgnoreRule(message.rule);
-          this.ignoreRules = rules;
-          return success(rules);
-        }
+        case "options/remove-ignore":
+          return success(await this.removeIgnoreRule(message.rule));
         case "options/save-ranges": {
           const validation = validateCidrText(message.draft);
 
@@ -341,24 +338,25 @@ export class BackgroundController {
     sender: RuntimeMessageSender,
   ): Promise<void> {
     const tabId = requireTabId(sender.tab?.id, "Message sender");
-    const push = await this.navigationStore.update(tabId, async (current) => {
-      const state = this.requireNavigation(current, navigationId);
-      const offered = getIgnoreChoices(state.identity).some((choice) =>
-        isSameRule(rule, choice.rule),
-      );
+    await this.enqueueConfiguration(async () => {
+      const push = await this.navigationStore.update(tabId, async (current) => {
+        const state = this.requireNavigation(current, navigationId);
+        const notice = deriveNotice(state, this.settings);
+        const offered = notice?.ignoreChoices.some((choice) => isSameRule(rule, choice.rule));
 
-      if (!offered) {
-        throw new Error("The ignore rule is not available for this navigation.");
-      }
+        if (offered !== true) {
+          throw new Error("The ignore rule is not available for this navigation.");
+        }
 
-      this.ignoreRules = await this.repository.addIgnoreRule(rule);
-      const suppressed = suppressNavigation(state);
-      return {
-        state: suppressed,
-        value: this.noticePush(suppressed),
-      };
+        this.ignoreRules = await this.repository.addIgnoreRule(rule);
+        const suppressed = suppressNavigation(state);
+        return {
+          state: suppressed,
+          value: this.noticePush(suppressed),
+        };
+      });
+      await this.adapter.sendNotice(tabId, push);
     });
-    await this.adapter.sendNotice(tabId, push);
   }
 
   private async leaveNavigation(navigationId: string, sender: RuntimeMessageSender): Promise<void> {
@@ -423,12 +421,22 @@ export class BackgroundController {
     };
   }
 
-  private async updateSettings(settings: Settings): Promise<Settings> {
-    const previous = this.settings;
-    const replacement = await this.repository.updateSettings(settings);
-    this.settings = replacement;
-    await this.applySettingsToOpenNavigations(previous, replacement);
-    return replacement;
+  private updateSettings(settings: Settings): Promise<Settings> {
+    return this.enqueueConfiguration(async () => {
+      const previous = this.settings;
+      const replacement = await this.repository.updateSettings(settings);
+      this.settings = replacement;
+      await this.applySettingsToOpenNavigations(previous, replacement);
+      return replacement;
+    });
+  }
+
+  private removeIgnoreRule(rule: IgnoreRule): Promise<IgnoreRule[]> {
+    return this.enqueueConfiguration(async () => {
+      const rules = await this.repository.removeIgnoreRule(rule);
+      this.ignoreRules = rules;
+      return rules;
+    });
   }
 
   private async applySettingsToOpenNavigations(
@@ -471,27 +479,29 @@ export class BackgroundController {
     }
   }
 
-  private async resetSection(section: StorageSection): Promise<unknown> {
-    const previousSettings = this.settings;
-    const replacement = await this.repository.resetSection(section);
-    const snapshot = await this.repository.getOptionsSnapshot();
+  private resetSection(section: StorageSection): Promise<unknown> {
+    return this.enqueueConfiguration(async () => {
+      const previousSettings = this.settings;
+      const replacement = await this.repository.resetSection(section);
+      const snapshot = await this.repository.getOptionsSnapshot();
 
-    switch (section) {
-      case "settings":
-        this.settings = snapshot.settings;
-        await this.applySettingsToOpenNavigations(previousSettings, this.settings);
-        break;
-      case "ignoreRules":
-        this.ignoreRules = snapshot.ignoreRules;
-        break;
-      case "ipRanges":
-        this.ranges = compileCidrs(snapshot.ipRanges);
-        break;
-      case "summaries":
-        break;
-    }
+      switch (section) {
+        case "settings":
+          this.settings = snapshot.settings;
+          await this.applySettingsToOpenNavigations(previousSettings, this.settings);
+          break;
+        case "ignoreRules":
+          this.ignoreRules = snapshot.ignoreRules;
+          break;
+        case "ipRanges":
+          this.ranges = compileCidrs(snapshot.ipRanges);
+          break;
+        case "summaries":
+          break;
+      }
 
-    return replacement;
+      return replacement;
+    });
   }
 
   private requireNavigation(
@@ -511,6 +521,15 @@ export class BackgroundController {
       navigationId: state.navigationId,
       notice: deriveNotice(state, this.settings),
     };
+  }
+
+  private enqueueConfiguration<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.configurationQueue.then(operation, operation);
+    this.configurationQueue = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
   }
 
   private async initializeState(): Promise<void> {
