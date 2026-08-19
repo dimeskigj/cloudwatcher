@@ -1,1 +1,25 @@
-export default defineBackground(() => undefined);
+import { createBrowserAdapter } from "@/background/browser-adapter";
+import { BackgroundController } from "@/background/controller";
+import { LocalRepository } from "@/storage/local-repository";
+import { SessionNavigationStore } from "@/storage/session-navigation-store";
+
+export default defineBackground(() => {
+  const repository = new LocalRepository(browser.storage.local);
+  const navigationStore = new SessionNavigationStore(browser.storage.session);
+  const controller = new BackgroundController(repository, navigationStore, createBrowserAdapter());
+  const ready = controller.initialize();
+
+  browser.webRequest.onBeforeRequest.addListener(
+    (details) => void ready.then(() => controller.handleBeforeRequest(details)),
+    { urls: ["<all_urls>"], types: ["main_frame"] },
+  );
+  browser.webRequest.onResponseStarted.addListener(
+    (details) => void ready.then(() => controller.handleResponseStarted(details)),
+    { urls: ["<all_urls>"] },
+    ["responseHeaders"],
+  );
+  browser.runtime.onMessage.addListener((message, sender) =>
+    ready.then(() => controller.handleMessage(message, sender)),
+  );
+  browser.tabs.onRemoved.addListener((tabId) => void controller.handleTabRemoved(tabId));
+});
