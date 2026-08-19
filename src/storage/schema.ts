@@ -1,3 +1,4 @@
+import { compileCidrs } from "../core/cidr";
 import {
   DEFAULT_SETTINGS,
   type DomainSummary,
@@ -7,6 +8,7 @@ import {
   type StorageDiagnostic,
   type StorageSection,
 } from "../core/model";
+import { canonicalizeHostname } from "../core/site-identity";
 
 export const SCHEMA_VERSION = 1;
 
@@ -19,6 +21,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function hasExactKeys(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
 function diagnostic(section: StorageSection): StorageDiagnostic {
   return {
     section,
@@ -28,7 +38,7 @@ function diagnostic(section: StorageSection): StorageDiagnostic {
 
 function isSettings(value: unknown): value is Settings {
   return (
-    isRecord(value) &&
+    hasExactKeys(value, ["directNoticeMode", "contentNoticeMode"]) &&
     (value.directNoticeMode === "overlay" ||
       value.directNoticeMode === "banner" ||
       value.directNoticeMode === "off") &&
@@ -38,11 +48,19 @@ function isSettings(value: unknown): value is Settings {
 
 function isIgnoreRule(value: unknown): value is IgnoreRule {
   return (
-    isRecord(value) &&
+    hasExactKeys(value, ["scope", "value"]) &&
     (value.scope === "host" || value.scope === "site") &&
     typeof value.value === "string" &&
-    value.value.length > 0
+    isCanonicalHostname(value.value)
   );
+}
+
+function isCanonicalHostname(value: string): boolean {
+  try {
+    return canonicalizeHostname(value) === value;
+  } catch {
+    return false;
+  }
 }
 
 function isIsoTimestamp(value: unknown): value is string {
@@ -56,7 +74,7 @@ function isIsoTimestamp(value: unknown): value is string {
 
 function isDomainSummary(value: unknown): value is DomainSummary {
   return (
-    isRecord(value) &&
+    hasExactKeys(value, ["directNavigations", "contentNavigations", "lastSeenAt"]) &&
     Number.isSafeInteger(value.directNavigations) &&
     Number(value.directNavigations) >= 0 &&
     Number.isSafeInteger(value.contentNavigations) &&
@@ -67,10 +85,22 @@ function isDomainSummary(value: unknown): value is DomainSummary {
 
 export function readSettings(value: unknown): SchemaRead<Settings> {
   if (isSettings(value)) {
-    return { value, diagnostic: undefined };
+    return {
+      value: {
+        directNoticeMode: value.directNoticeMode,
+        contentNoticeMode: value.contentNoticeMode,
+      },
+      diagnostic: undefined,
+    };
   }
 
-  return { value: { ...DEFAULT_SETTINGS }, diagnostic: diagnostic("settings") };
+  return {
+    value: {
+      directNoticeMode: DEFAULT_SETTINGS.directNoticeMode,
+      contentNoticeMode: DEFAULT_SETTINGS.contentNoticeMode,
+    },
+    diagnostic: diagnostic("settings"),
+  };
 }
 
 export function readIgnoreRules(value: unknown): SchemaRead<IgnoreRule[]> {
@@ -78,10 +108,20 @@ export function readIgnoreRules(value: unknown): SchemaRead<IgnoreRule[]> {
     return { value: [], diagnostic: diagnostic("ignoreRules") };
   }
 
-  const validRules = value.filter(isIgnoreRule);
+  const validRules: IgnoreRule[] = [];
+  let hasInvalidRule = false;
+
+  for (const rule of value) {
+    if (isIgnoreRule(rule)) {
+      validRules.push({ scope: rule.scope, value: rule.value });
+    } else {
+      hasInvalidRule = true;
+    }
+  }
+
   return {
     value: validRules,
-    diagnostic: validRules.length === value.length ? undefined : diagnostic("ignoreRules"),
+    diagnostic: hasInvalidRule ? diagnostic("ignoreRules") : undefined,
   };
 }
 
@@ -90,26 +130,61 @@ export function readIpRanges(value: unknown): SchemaRead<string[]> {
     return { value: [], diagnostic: diagnostic("ipRanges") };
   }
 
-  const validRanges = value.filter((range): range is string => typeof range === "string");
+  const validRanges = new Map<string, string>();
+  let hasInvalidRange = false;
+
+  for (const range of value) {
+    if (typeof range !== "string") {
+      hasInvalidRange = true;
+      continue;
+    }
+
+    try {
+      const compiled = compileCidrs([range]);
+      const canonicalRange = compiled[0]?.text;
+
+      if (canonicalRange === undefined) {
+        hasInvalidRange = true;
+      } else {
+        validRanges.set(canonicalRange, canonicalRange);
+      }
+    } catch {
+      hasInvalidRange = true;
+    }
+  }
+
   return {
-    value: validRanges,
-    diagnostic: validRanges.length === value.length ? undefined : diagnostic("ipRanges"),
+    value: [...validRanges.values()],
+    diagnostic: hasInvalidRange ? diagnostic("ipRanges") : undefined,
   };
 }
 
 export function readSummaries(value: unknown): SchemaRead<Record<string, DomainSummary>> {
   if (!isRecord(value)) {
-    return { value: {}, diagnostic: diagnostic("summaries") };
+    return {
+      value: Object.create(null) as Record<string, DomainSummary>,
+      diagnostic: diagnostic("summaries"),
+    };
   }
 
-  const entries = Object.entries(value);
-  const validEntries = entries.filter(
-    (entry): entry is [string, DomainSummary] => entry[0].length > 0 && isDomainSummary(entry[1]),
-  );
+  const summaries = Object.create(null) as Record<string, DomainSummary>;
+  let hasInvalidSummary = false;
+
+  for (const [siteKey, summary] of Object.entries(value)) {
+    if (isCanonicalHostname(siteKey) && isDomainSummary(summary)) {
+      summaries[siteKey] = {
+        directNavigations: summary.directNavigations,
+        contentNavigations: summary.contentNavigations,
+        lastSeenAt: summary.lastSeenAt,
+      };
+    } else {
+      hasInvalidSummary = true;
+    }
+  }
 
   return {
-    value: Object.fromEntries(validEntries),
-    diagnostic: validEntries.length === entries.length ? undefined : diagnostic("summaries"),
+    value: summaries,
+    diagnostic: hasInvalidSummary ? diagnostic("summaries") : undefined,
   };
 }
 

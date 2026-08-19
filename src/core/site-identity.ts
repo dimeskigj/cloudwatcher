@@ -1,14 +1,47 @@
+import ipaddr from "ipaddr.js";
 import { getDomain } from "tldts";
 import type { IgnoreChoice, IgnoreRule, SiteIdentity } from "./model";
 
-function canonicalizeHostname(hostname: string): string {
-  const canonicalHostname = hostname.toLowerCase().replace(/\.+$/, "");
-
-  if (canonicalHostname.startsWith("[") && canonicalHostname.endsWith("]")) {
-    return canonicalHostname.slice(1, -1);
+export function canonicalizeHostname(hostname: string): string {
+  if (hostname.length === 0 || /[\s/@\\?#%]/.test(hostname)) {
+    throw new TypeError("Invalid hostname");
   }
 
-  return canonicalHostname;
+  if (hostname.startsWith("[") && hostname.endsWith("]")) {
+    try {
+      const address = ipaddr.parse(hostname.slice(1, -1));
+
+      if (address.kind() === "ipv6") {
+        return address.toString();
+      }
+    } catch {
+      // Fall through to the common invalid-hostname error.
+    }
+
+    throw new TypeError("Invalid hostname");
+  }
+
+  if (ipaddr.isValid(hostname)) {
+    return ipaddr.parse(hostname).toString();
+  }
+
+  if (hostname.includes(":")) {
+    throw new TypeError("Invalid hostname");
+  }
+
+  try {
+    const canonicalHostname = new URL(`http://${hostname}`).hostname
+      .toLowerCase()
+      .replace(/\.+$/, "");
+
+    if (canonicalHostname.length > 0) {
+      return canonicalHostname;
+    }
+  } catch {
+    // Fall through to the common invalid-hostname error.
+  }
+
+  throw new TypeError("Invalid hostname");
 }
 
 export function getSiteIdentity(url: string): SiteIdentity {

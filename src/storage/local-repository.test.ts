@@ -110,6 +110,23 @@ describe("LocalRepository", () => {
     expect(remove).not.toHaveBeenCalled();
   });
 
+  it("rejects extra settings keys asynchronously and keeps the queue usable", async () => {
+    await seedVersionedStorage();
+    const repository = new LocalRepository(fakeBrowser.storage.local);
+    const invalidSettings = {
+      ...customSettings,
+      unexpected: true,
+    } as Settings;
+    let rejection: Promise<Settings> | undefined;
+
+    expect(() => {
+      rejection = repository.updateSettings(invalidSettings);
+    }).not.toThrow();
+    await expect(rejection).rejects.toThrow(/settings/);
+    expect((await fakeBrowser.storage.local.get("settings")).settings).toEqual(DEFAULT_SETTINGS);
+    await expect(repository.updateSettings(customSettings)).resolves.toEqual(customSettings);
+  });
+
   it("replaces ranges atomically and permits an intentionally empty list", async () => {
     await seedVersionedStorage();
     const set = vi.spyOn(fakeBrowser.storage.local, "set");
@@ -122,10 +139,36 @@ describe("LocalRepository", () => {
     expect((await repository.getOptionsSnapshot()).ipRanges).toEqual([]);
   });
 
+  it("canonicalizes and deduplicates a complete range replacement atomically", async () => {
+    await seedVersionedStorage();
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    const repository = new LocalRepository(fakeBrowser.storage.local);
+
+    await expect(
+      repository.saveRanges(["192.0.2.99/24", "192.0.2.0/24", "2001:0DB8::/32"]),
+    ).resolves.toEqual(["192.0.2.0/24", "2001:db8::/32"]);
+
+    expect(set).toHaveBeenCalledOnce();
+    expect(set).toHaveBeenCalledWith({ ipRanges: ["192.0.2.0/24", "2001:db8::/32"] });
+  });
+
+  it("rejects a complete range replacement asynchronously when any entry is invalid", async () => {
+    await seedVersionedStorage({ ipRanges: ["192.0.2.0/24"] });
+    const repository = new LocalRepository(fakeBrowser.storage.local);
+    let rejection: Promise<string[]> | undefined;
+
+    expect(() => {
+      rejection = repository.saveRanges(["198.51.100.0/24", "not-a-cidr"]);
+    }).not.toThrow();
+    await expect(rejection).rejects.toThrow(/ipRanges/);
+    expect((await fakeBrowser.storage.local.get("ipRanges")).ipRanges).toEqual(["192.0.2.0/24"]);
+    await expect(repository.saveRanges(["198.51.100.9/24"])).resolves.toEqual(["198.51.100.0/24"]);
+  });
+
   it("canonicalizes and deduplicates shared ignore rules", async () => {
     await seedVersionedStorage({
       ignoreRules: [
-        { scope: "site", value: "Example.COM." },
+        { scope: "site", value: "example.com" },
         { scope: "site", value: "example.com" },
         { scope: "host", value: "example.com" },
       ],
@@ -133,22 +176,41 @@ describe("LocalRepository", () => {
     const repository = new LocalRepository(fakeBrowser.storage.local);
 
     const [first, second] = await Promise.all([
-      repository.addIgnoreRule({ scope: "host", value: "API.Example.COM." }),
-      repository.addIgnoreRule({ scope: "host", value: "api.example.com" }),
+      repository.addIgnoreRule({ scope: "host", value: "BÜCHER.Example." }),
+      repository.addIgnoreRule({ scope: "host", value: "xn--bcher-kva.example" }),
     ]);
 
     expect(first).toEqual([
       { scope: "site", value: "example.com" },
       { scope: "host", value: "example.com" },
-      { scope: "host", value: "api.example.com" },
+      { scope: "host", value: "xn--bcher-kva.example" },
     ]);
     expect(second).toEqual(first);
     await expect(
       repository.removeIgnoreRule({ scope: "site", value: "EXAMPLE.COM." }),
     ).resolves.toEqual([
       { scope: "host", value: "example.com" },
-      { scope: "host", value: "api.example.com" },
+      { scope: "host", value: "xn--bcher-kva.example" },
     ]);
+  });
+
+  it.each([
+    { scope: "host", value: "https://example.com" },
+    { scope: "host", value: "example.com/path" },
+    { scope: "host", value: "example.com:443" },
+    { scope: "host", value: " example.com" },
+    { scope: "host", value: "user@example.com" },
+    { scope: "host", value: "example.com", unexpected: true },
+  ])("rejects malformed ignore rule $value asynchronously", async (invalidRule) => {
+    await seedVersionedStorage();
+    const repository = new LocalRepository(fakeBrowser.storage.local);
+    let rejection: Promise<unknown> | undefined;
+
+    expect(() => {
+      rejection = repository.addIgnoreRule(invalidRule as never);
+    }).not.toThrow();
+    await expect(rejection).rejects.toThrow(/rule|hostname/i);
+    expect((await fakeBrowser.storage.local.get("ignoreRules")).ignoreRules).toEqual([]);
   });
 
   it("rejects incremental rule changes when the raw section is invalid", async () => {
@@ -195,18 +257,78 @@ describe("LocalRepository", () => {
     });
   });
 
-  it("leaves private detections unrecorded at the caller boundary", async () => {
+  it("canonicalizes IDNA summary keys", async () => {
     await seedVersionedStorage();
     const repository = new LocalRepository(fakeBrowser.storage.local);
-    const recordFromCaller = async (incognito: boolean): Promise<void> => {
-      if (!incognito) {
-        await repository.recordDetection("example.com", "direct", "2026-08-18T12:00:00.000Z");
-      }
+
+    await repository.recordDetection("BÜCHER.Example.", "direct", "2026-08-18T12:00:00.000Z");
+
+    const summaries = (await repository.getOptionsSnapshot()).summaries;
+    expect(Object.getPrototypeOf(summaries)).toBeNull();
+    expect(Object.hasOwn(summaries, "xn--bcher-kva.example")).toBe(true);
+    expect(Object.hasOwn(summaries, "BÜCHER.Example.")).toBe(false);
+  });
+
+  it.each([
+    "https://example.com",
+    "example.com/path",
+    "example.com:443",
+    " example.com",
+    "user@example.com",
+  ])("rejects malformed summary key %s asynchronously", async (siteKey) => {
+    await seedVersionedStorage();
+    const repository = new LocalRepository(fakeBrowser.storage.local);
+    let rejection: Promise<unknown> | undefined;
+
+    expect(() => {
+      rejection = repository.recordDetection(siteKey, "direct", "2026-08-18T12:00:00.000Z");
+    }).not.toThrow();
+    await expect(rejection).rejects.toThrow(/hostname/i);
+    expect((await fakeBrowser.storage.local.get("summaries")).summaries).toEqual({});
+  });
+
+  it("updates own constructor and __proto__ keys with null-prototype replacements", async () => {
+    const summaries = Object.create(null) as Record<string, unknown>;
+    const constructorKey: string = "constructor";
+    const protoKey: string = "__proto__";
+    summaries[constructorKey] = {
+      directNavigations: 1,
+      contentNavigations: 0,
+      lastSeenAt: "2026-08-18T12:00:00.000Z",
     };
+    summaries[protoKey] = {
+      directNavigations: 0,
+      contentNavigations: 2,
+      lastSeenAt: "2026-08-18T12:01:00.000Z",
+    };
+    await seedVersionedStorage({ summaries });
+    const set = vi.spyOn(fakeBrowser.storage.local, "set");
+    const repository = new LocalRepository(fakeBrowser.storage.local);
 
-    await recordFromCaller(true);
+    await repository.recordDetection("constructor", "direct", "2026-08-18T12:02:00.000Z");
+    await repository.recordDetection("__proto__", "content", "2026-08-18T12:03:00.000Z");
 
-    expect((await repository.getOptionsSnapshot()).summaries).toEqual({});
+    const snapshot = await repository.getOptionsSnapshot();
+    const firstWrite = set.mock.calls[0]?.[0] as unknown as { summaries: object };
+    const secondWrite = set.mock.calls[1]?.[0] as unknown as { summaries: object };
+    expect(snapshot.summaries[constructorKey]?.directNavigations).toBe(2);
+    expect(snapshot.summaries[protoKey]?.contentNavigations).toBe(3);
+    expect(Object.getPrototypeOf(firstWrite.summaries)).toBeNull();
+    expect(Object.getPrototypeOf(secondWrite.summaries)).toBeNull();
+  });
+
+  it("rejects an invalid timestamp asynchronously without poisoning the queue", async () => {
+    await seedVersionedStorage();
+    const repository = new LocalRepository(fakeBrowser.storage.local);
+    let rejection: Promise<unknown> | undefined;
+
+    expect(() => {
+      rejection = repository.recordDetection("example.com", "direct", "not-a-timestamp");
+    }).not.toThrow();
+    await expect(rejection).rejects.toThrow(/timestamp/i);
+    await expect(
+      repository.recordDetection("example.com", "direct", "2026-08-18T12:00:00.000Z"),
+    ).resolves.toMatchObject({ directNavigations: 1 });
   });
 
   it("rejects summary increments when any raw summary row is invalid", async () => {
@@ -245,6 +367,8 @@ describe("LocalRepository", () => {
 
     expect(set).toHaveBeenCalledOnce();
     expect(set).toHaveBeenCalledWith({ summaries: {} });
+    const write = set.mock.calls[0]?.[0] as unknown as { summaries: object };
+    expect(Object.getPrototypeOf(write.summaries)).toBeNull();
     expect((await fakeBrowser.storage.local.get("settings")).settings).toEqual(customSettings);
   });
 
