@@ -104,6 +104,7 @@ Tests are colocated as `*.test.ts` or `*.test.tsx` beside the source they cover.
 ### Task 1: Cross-Browser Project Foundation
 
 **Files:**
+- Create: `.nvmrc`
 - Create: `package.json`
 - Create: `.gitignore`
 - Create: `biome.json`
@@ -124,6 +125,12 @@ Tests are colocated as `*.test.ts` or `*.test.tsx` beside the source they cover.
 
 Use this package metadata and scripts:
 
+Pin the Node version in `.nvmrc`:
+
+```text
+26.7.0
+```
+
 ```json
 {
   "name": "cloudwatcher",
@@ -131,7 +138,7 @@ Use this package metadata and scripts:
   "private": true,
   "type": "module",
   "packageManager": "npm@11.9.0",
-  "engines": { "node": ">=22" },
+  "engines": { "node": ">=26" },
   "scripts": {
     "dev": "wxt -b chrome --mv3",
     "dev:firefox": "wxt -b firefox --mv3",
@@ -307,7 +314,7 @@ Expected: one passing test and successful `.output/chrome-mv3` and `.output/fire
 - [ ] **Step 5: Commit**
 
 ```bash
-git add package.json package-lock.json .gitignore biome.json tsconfig.json vitest.config.ts vitest.setup.ts wxt.config.ts src/manifest.ts src/manifest.test.ts src/entrypoints/background.ts
+git add .nvmrc package.json package-lock.json .gitignore biome.json tsconfig.json vitest.config.ts vitest.setup.ts wxt.config.ts src/manifest.ts src/manifest.test.ts src/entrypoints/background.ts
 git commit -m "build: initialize cross-browser extension"
 ```
 
