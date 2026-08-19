@@ -2,6 +2,17 @@ export type DirectNoticeMode = "overlay" | "banner" | "off";
 export type ContentNoticeMode = "banner" | "off";
 export type DetectionCategory = "direct" | "content";
 
+export type DetectionEvidence =
+  | {
+      kind: "header";
+      signal: "cf-ray" | "cf-cache-status" | "cf-mitigated" | "server: cloudflare";
+    }
+  | { kind: "ip"; ip: string; cidr: string };
+
+export interface DetectionMatch {
+  evidence: DetectionEvidence[];
+}
+
 export interface Settings {
   directNoticeMode: DirectNoticeMode;
   contentNoticeMode: ContentNoticeMode;
