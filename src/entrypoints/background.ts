@@ -12,6 +12,7 @@ export default defineBackground(() => {
   const navigationStore = new SessionNavigationStore(browser.storage.session);
   const controller = new BackgroundController(repository, navigationStore, createBrowserAdapter());
   const ready = controller.initialize();
+  void ready.catch(logBackgroundError);
 
   browser.webRequest.onBeforeRequest.addListener(
     (details) => {

@@ -57,6 +57,11 @@ interface ControllerOptions {
   now?: () => string;
 }
 
+interface PendingNotice {
+  tabId: number;
+  message: RuntimePush;
+}
+
 const TOP_LEVEL_PROTOCOLS = new Set(["http:", "https:"]);
 const RESPONSE_PROTOCOLS = new Set(["http:", "https:", "ws:", "wss:"]);
 
@@ -120,6 +125,9 @@ function isSameRule(candidate: unknown, expected: IgnoreRule): boolean {
 export class BackgroundController {
   private initialization: Promise<void> | undefined;
   private configurationQueue: Promise<unknown> = Promise.resolve();
+  private readonly tabEventQueues = new Map<number, Promise<unknown>>();
+  private readonly outboundQueues = new Map<number, Promise<unknown>>();
+  private readonly removedTabs = new Set<number>();
   private settings: Settings = DEFAULT_SETTINGS;
   private ignoreRules: IgnoreRule[] = [];
   private ranges: CompiledCidr[] = [];
@@ -141,11 +149,35 @@ export class BackgroundController {
     return this.initialization;
   }
 
-  async handleBeforeRequest(details: BeforeRequestDetails): Promise<void> {
+  handleBeforeRequest(details: BeforeRequestDetails): Promise<void> {
     if (details.tabId < 0 || details.type !== "main_frame") {
-      return;
+      return Promise.resolve();
     }
 
+    if (this.removedTabs.has(details.tabId)) {
+      return Promise.resolve();
+    }
+
+    return this.enqueueTabEvent(details.tabId, () => this.processBeforeRequest(details));
+  }
+
+  handleResponseStarted(details: ResponseStartedDetails): Promise<void> {
+    if (details.tabId < 0 || this.removedTabs.has(details.tabId)) {
+      return Promise.resolve();
+    }
+
+    let delivery: Promise<void> | undefined;
+    const transaction = this.enqueueTabEvent(details.tabId, async () => {
+      const message = await this.processResponseStarted(details);
+
+      if (message !== undefined) {
+        delivery = this.enqueueNotice(details.tabId, message);
+      }
+    });
+    return transaction.then(() => delivery);
+  }
+
+  private async processBeforeRequest(details: BeforeRequestDetails): Promise<void> {
     if (supportedIdentity(details.url, TOP_LEVEL_PROTOCOLS) === undefined) {
       return;
     }
@@ -170,15 +202,13 @@ export class BackgroundController {
     );
   }
 
-  async handleResponseStarted(details: ResponseStartedDetails): Promise<void> {
-    if (details.tabId < 0) {
-      return;
-    }
-
+  private async processResponseStarted(
+    details: ResponseStartedDetails,
+  ): Promise<RuntimePush | undefined> {
     const responseIdentity = supportedIdentity(details.url, RESPONSE_PROTOCOLS);
 
     if (responseIdentity === undefined) {
-      return;
+      return undefined;
     }
 
     await this.initialize();
@@ -189,7 +219,7 @@ export class BackgroundController {
     });
 
     if (match === null) {
-      return;
+      return undefined;
     }
 
     const category = details.type === "main_frame" ? "direct" : "content";
@@ -227,9 +257,7 @@ export class BackgroundController {
       return { state, value: message };
     });
 
-    if (push !== undefined) {
-      await this.adapter.sendNotice(details.tabId, push);
-    }
+    return push;
   }
 
   async handleMessage(
@@ -270,9 +298,7 @@ export class BackgroundController {
             };
           }
 
-          const ranges = await this.repository.saveRanges(validation.values);
-          this.ranges = compileCidrs(ranges);
-          return success(ranges);
+          return success(await this.saveRanges(validation.values));
         }
         case "options/clear-activity":
           return success(await this.repository.clearActivity());
@@ -286,9 +312,12 @@ export class BackgroundController {
     }
   }
 
-  async handleTabRemoved(tabId: number): Promise<void> {
-    await this.initialize().catch(() => undefined);
-    await this.navigationStore.remove(tabId);
+  handleTabRemoved(tabId: number): Promise<void> {
+    this.removedTabs.add(tabId);
+    return this.enqueueTabEvent(tabId, async () => {
+      await this.initialize().catch(() => undefined);
+      await this.navigationStore.remove(tabId);
+    });
   }
 
   private async handshake(url: string, sender: RuntimeMessageSender): Promise<HandshakeData> {
@@ -329,7 +358,7 @@ export class BackgroundController {
         value: this.noticePush(dismissed),
       };
     });
-    await this.adapter.sendNotice(tabId, push);
+    await this.enqueueNotice(tabId, push);
   }
 
   private async ignoreNavigation(
@@ -338,7 +367,7 @@ export class BackgroundController {
     sender: RuntimeMessageSender,
   ): Promise<void> {
     const tabId = requireTabId(sender.tab?.id, "Message sender");
-    await this.enqueueConfiguration(async () => {
+    const push = await this.enqueueConfiguration(async () => {
       const push = await this.navigationStore.update(tabId, async (current) => {
         const state = this.requireNavigation(current, navigationId);
         const notice = deriveNotice(state, this.settings);
@@ -355,8 +384,9 @@ export class BackgroundController {
           value: this.noticePush(suppressed),
         };
       });
-      await this.adapter.sendNotice(tabId, push);
+      return push;
     });
+    await this.enqueueNotice(tabId, push);
   }
 
   private async leaveNavigation(navigationId: string, sender: RuntimeMessageSender): Promise<void> {
@@ -421,14 +451,16 @@ export class BackgroundController {
     };
   }
 
-  private updateSettings(settings: Settings): Promise<Settings> {
-    return this.enqueueConfiguration(async () => {
+  private async updateSettings(settings: Settings): Promise<Settings> {
+    const { replacement, notices } = await this.enqueueConfiguration(async () => {
       const previous = this.settings;
       const replacement = await this.repository.updateSettings(settings);
       this.settings = replacement;
-      await this.applySettingsToOpenNavigations(previous, replacement);
-      return replacement;
+      const notices = await this.applySettingsToOpenNavigations(previous, replacement);
+      return { replacement, notices };
     });
+    await this.deliverNotices(notices);
+    return replacement;
   }
 
   private removeIgnoreRule(rule: IgnoreRule): Promise<IgnoreRule[]> {
@@ -439,11 +471,20 @@ export class BackgroundController {
     });
   }
 
+  private saveRanges(values: readonly string[]): Promise<string[]> {
+    return this.enqueueConfiguration(async () => {
+      const ranges = await this.repository.saveRanges(values);
+      this.ranges = compileCidrs(ranges);
+      return ranges;
+    });
+  }
+
   private async applySettingsToOpenNavigations(
     previous: Settings,
     replacement: Settings,
-  ): Promise<void> {
+  ): Promise<PendingNotice[]> {
     const openNavigations = await this.navigationStore.list();
+    const notices: PendingNotice[] = [];
 
     for (const navigation of openNavigations) {
       const push = await this.navigationStore.update(navigation.tabId, async (current) => {
@@ -474,21 +515,24 @@ export class BackgroundController {
       });
 
       if (push !== undefined) {
-        await this.adapter.sendNotice(navigation.tabId, push);
+        notices.push({ tabId: navigation.tabId, message: push });
       }
     }
+
+    return notices;
   }
 
-  private resetSection(section: StorageSection): Promise<unknown> {
-    return this.enqueueConfiguration(async () => {
+  private async resetSection(section: StorageSection): Promise<unknown> {
+    const { replacement, notices } = await this.enqueueConfiguration(async () => {
       const previousSettings = this.settings;
       const replacement = await this.repository.resetSection(section);
       const snapshot = await this.repository.getOptionsSnapshot();
+      let notices: PendingNotice[] = [];
 
       switch (section) {
         case "settings":
           this.settings = snapshot.settings;
-          await this.applySettingsToOpenNavigations(previousSettings, this.settings);
+          notices = await this.applySettingsToOpenNavigations(previousSettings, this.settings);
           break;
         case "ignoreRules":
           this.ignoreRules = snapshot.ignoreRules;
@@ -500,8 +544,10 @@ export class BackgroundController {
           break;
       }
 
-      return replacement;
+      return { replacement, notices };
     });
+    await this.deliverNotices(notices);
+    return replacement;
   }
 
   private requireNavigation(
@@ -530,6 +576,45 @@ export class BackgroundController {
       () => undefined,
     );
     return result;
+  }
+
+  private enqueueTabEvent<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
+    const prior = this.tabEventQueues.get(tabId) ?? Promise.resolve();
+    const result = prior.then(operation, operation);
+    const lock = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.tabEventQueues.set(tabId, lock);
+    void lock.then(() => {
+      if (this.tabEventQueues.get(tabId) === lock) {
+        this.tabEventQueues.delete(tabId);
+      }
+    });
+    return result;
+  }
+
+  private enqueueNotice(tabId: number, message: RuntimePush): Promise<void> {
+    const prior = this.outboundQueues.get(tabId) ?? Promise.resolve();
+    const result = prior.then(
+      () => this.adapter.sendNotice(tabId, message),
+      () => this.adapter.sendNotice(tabId, message),
+    );
+    const lock = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.outboundQueues.set(tabId, lock);
+    void lock.then(() => {
+      if (this.outboundQueues.get(tabId) === lock) {
+        this.outboundQueues.delete(tabId);
+      }
+    });
+    return result;
+  }
+
+  private async deliverNotices(notices: readonly PendingNotice[]): Promise<void> {
+    await Promise.all(notices.map(({ tabId, message }) => this.enqueueNotice(tabId, message)));
   }
 
   private async initializeState(): Promise<void> {

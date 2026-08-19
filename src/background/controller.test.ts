@@ -102,6 +102,37 @@ function responseStarted(overrides: Partial<ResponseStartedDetails> = {}): Respo
   };
 }
 
+function deferred<T>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function blockConfiguration({
+  controller,
+  repository,
+}: Pick<Harness, "controller" | "repository">) {
+  const persistSettings = repository.updateSettings.bind(repository);
+  const started = deferred<void>();
+  const canFinish = deferred<void>();
+  vi.spyOn(repository, "updateSettings").mockImplementationOnce(async (settings) => {
+    started.resolve();
+    await canFinish.promise;
+    return persistSettings(settings);
+  });
+  const operation = controller.handleMessage(
+    {
+      type: "options/update-settings",
+      settings: { directNoticeMode: "banner", contentNoticeMode: "banner" },
+    },
+    {},
+  );
+  await started.promise;
+  return { operation, release: canFinish.resolve };
+}
+
 describe("BackgroundController detection flow", () => {
   beforeEach(() => {
     fakeBrowser.reset();
@@ -382,6 +413,103 @@ describe("BackgroundController detection flow", () => {
     expect(state).toMatchObject({ counted: { direct: false, content: false } });
     expect(state?.direct).toBeUndefined();
     expect(state?.content).toBeUndefined();
+  });
+
+  it("orders a blocked main-frame start before its response without blocking another tab", async () => {
+    const harness = await createHarness();
+    const { adapter, controller, navigationStore, repository } = harness;
+    await controller.handleBeforeRequest(
+      beforeRequest({ tabId: 9, requestId: "main-9", url: "https://page.example.net/" }),
+    );
+    const blocked = await blockConfiguration(harness);
+
+    const starting = controller.handleBeforeRequest(beforeRequest());
+    const responding = controller.handleResponseStarted(responseStarted());
+    let independentFinished = false;
+    const independent = controller
+      .handleResponseStarted(
+        responseStarted({
+          tabId: 9,
+          requestId: "asset-9",
+          type: "image",
+          url: "https://cdn.example.org/image.png",
+        }),
+      )
+      .then(() => {
+        independentFinished = true;
+      });
+
+    try {
+      await vi.waitFor(() => expect(independentFinished).toBe(true), { timeout: 500 });
+      expect(await navigationStore.get(9)).toMatchObject({ content: expect.any(Object) });
+    } finally {
+      blocked.release();
+    }
+
+    await Promise.all([blocked.operation, starting, responding, independent]);
+    expect(await navigationStore.get(8)).toMatchObject({
+      requestId: "main-1",
+      direct: expect.any(Object),
+    });
+    expect((await repository.getOptionsSnapshot()).summaries["example.com"]).toMatchObject({
+      directNavigations: 1,
+    });
+    expect(adapter.sent.some(({ tabId }) => tabId === 8)).toBe(true);
+  });
+
+  it("orders a blocked redirect before its main-frame response", async () => {
+    const harness = await createHarness();
+    const { controller, navigationStore, repository } = harness;
+    await controller.handleBeforeRequest(
+      beforeRequest({ url: "https://redirector.example/start" }),
+    );
+    const blocked = await blockConfiguration(harness);
+
+    const redirecting = controller.handleBeforeRequest(
+      beforeRequest({ url: "https://account.example.net/final" }),
+    );
+    const responding = controller.handleResponseStarted(
+      responseStarted({ url: "https://account.example.net/final" }),
+    );
+    blocked.release();
+
+    await Promise.all([blocked.operation, redirecting, responding]);
+    expect(await navigationStore.get(8)).toMatchObject({
+      topLevelUrl: "https://account.example.net/final",
+      direct: expect.any(Object),
+    });
+    const summaries = (await repository.getOptionsSnapshot()).summaries;
+    expect(summaries["example.net"]).toMatchObject({ directNavigations: 1 });
+    expect(summaries["redirector.example"]).toBeUndefined();
+  });
+
+  it("attributes content to a blocked new navigation instead of the previous tab state", async () => {
+    const harness = await createHarness();
+    const { controller, navigationStore, repository } = harness;
+    await controller.handleBeforeRequest(beforeRequest({ url: "https://old.example/" }));
+    const blocked = await blockConfiguration(harness);
+
+    const starting = controller.handleBeforeRequest(
+      beforeRequest({ requestId: "main-2", url: "https://new.example/" }),
+    );
+    const responding = controller.handleResponseStarted(
+      responseStarted({
+        requestId: "asset-2",
+        type: "script",
+        url: "https://cdn.example.net/app.js",
+      }),
+    );
+    blocked.release();
+
+    await Promise.all([blocked.operation, starting, responding]);
+    expect(await navigationStore.get(8)).toMatchObject({
+      requestId: "main-2",
+      identity: { hostname: "new.example" },
+      content: { resourceHost: "cdn.example.net" },
+    });
+    const summaries = (await repository.getOptionsSnapshot()).summaries;
+    expect(summaries["new.example"]).toMatchObject({ contentNavigations: 1 });
+    expect(summaries["old.example"]).toBeUndefined();
   });
 });
 
@@ -918,6 +1046,92 @@ describe("BackgroundController messages and actions", () => {
     expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual(["banner", "overlay"]);
   });
 
+  it("does not let a never-settling notice block same-tab navigation or settings state", async () => {
+    const { adapter, controller, navigationStore, repository } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+    const sendStarted = deferred<void>();
+    vi.spyOn(adapter, "sendNotice").mockImplementation(async (tabId, message) => {
+      adapter.sent.push({ tabId, message });
+      sendStarted.resolve();
+      await new Promise<void>(() => undefined);
+    });
+    const bannerSettings: Settings = {
+      directNoticeMode: "banner",
+      contentNoticeMode: "banner",
+    };
+
+    void controller.handleMessage(
+      { type: "options/update-settings", settings: bannerSettings },
+      {},
+    );
+    await sendStarted.promise;
+    let navigationFinished = false;
+    void controller.handleBeforeRequest(beforeRequest({ requestId: "main-2" })).then(() => {
+      navigationFinished = true;
+    });
+    void controller.handleMessage(
+      { type: "options/update-settings", settings: DEFAULT_SETTINGS },
+      {},
+    );
+
+    await vi.waitFor(
+      async () => {
+        expect(navigationFinished).toBe(true);
+        expect((await navigationStore.get(8))?.requestId).toBe("main-2");
+        expect((await repository.getOptionsSnapshot()).settings).toEqual(DEFAULT_SETTINGS);
+      },
+      { timeout: 500 },
+    );
+    expect(adapter.sent).toHaveLength(1);
+  });
+
+  it("keeps same-tab notice sends ordered while later settings transactions complete", async () => {
+    const { adapter, controller, repository } = await createHarness();
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(responseStarted());
+    adapter.sent.length = 0;
+    const firstSendStarted = deferred<void>();
+    const firstSendCanFinish = deferred<void>();
+    vi.spyOn(adapter, "sendNotice").mockImplementation(async (tabId, message) => {
+      adapter.sent.push({ tabId, message });
+
+      if (adapter.sent.length === 1) {
+        firstSendStarted.resolve();
+        await firstSendCanFinish.promise;
+      }
+    });
+    const bannerSettings: Settings = {
+      directNoticeMode: "banner",
+      contentNoticeMode: "banner",
+    };
+
+    const banner = controller.handleMessage(
+      { type: "options/update-settings", settings: bannerSettings },
+      {},
+    );
+    await firstSendStarted.promise;
+    const overlay = controller.handleMessage(
+      { type: "options/update-settings", settings: DEFAULT_SETTINGS },
+      {},
+    );
+
+    try {
+      await vi.waitFor(
+        async () =>
+          expect((await repository.getOptionsSnapshot()).settings).toEqual(DEFAULT_SETTINGS),
+        { timeout: 500 },
+      );
+      expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual(["banner"]);
+    } finally {
+      firstSendCanFinish.resolve();
+    }
+
+    await Promise.all([banner, overlay]);
+    expect(adapter.sent.map(({ message }) => message.notice?.mode)).toEqual(["banner", "overlay"]);
+  });
+
   it("orders a delayed navigation start before disabling settings without rearming it", async () => {
     const { adapter, controller, navigationStore, repository } = await createHarness();
     const persistSession = fakeBrowser.storage.session.set.bind(fakeBrowser.storage.session);
@@ -1053,6 +1267,60 @@ describe("BackgroundController messages and actions", () => {
     expect(adapter.sent.at(-1)?.message.notice).toMatchObject({ kind: "direct" });
   });
 
+  it("orders a range reset before a concurrently invoked range save", async () => {
+    const { adapter, controller, repository } = await createHarness({
+      ranges: ["198.51.100.0/24"],
+    });
+
+    const resetting = controller.handleMessage(
+      { type: "options/reset-section", section: "ipRanges" },
+      {},
+    );
+    const saving = controller.handleMessage(
+      { type: "options/save-ranges", draft: "203.0.113.0/24" },
+      {},
+    );
+
+    await expect(Promise.all([resetting, saving])).resolves.toEqual([
+      { ok: true, data: [...DEFAULT_CIDRS] },
+      { ok: true, data: ["203.0.113.0/24"] },
+    ]);
+    expect((await repository.getOptionsSnapshot()).ipRanges).toEqual(["203.0.113.0/24"]);
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(
+      responseStarted({ responseHeaders: undefined, ip: "203.0.113.7" }),
+    );
+    expect(adapter.sent.at(-1)?.message.notice).toMatchObject({ kind: "direct" });
+  });
+
+  it("orders a range save before a concurrently invoked range reset", async () => {
+    const { adapter, controller, repository } = await createHarness({ ranges: [] });
+
+    const saving = controller.handleMessage(
+      { type: "options/save-ranges", draft: "203.0.113.0/24" },
+      {},
+    );
+    const resetting = controller.handleMessage(
+      { type: "options/reset-section", section: "ipRanges" },
+      {},
+    );
+
+    await expect(Promise.all([saving, resetting])).resolves.toEqual([
+      { ok: true, data: ["203.0.113.0/24"] },
+      { ok: true, data: [...DEFAULT_CIDRS] },
+    ]);
+    expect((await repository.getOptionsSnapshot()).ipRanges).toEqual([...DEFAULT_CIDRS]);
+    await controller.handleBeforeRequest(beforeRequest());
+    await controller.handleResponseStarted(
+      responseStarted({ responseHeaders: undefined, ip: "203.0.113.7" }),
+    );
+    expect(adapter.sent).toEqual([]);
+    await controller.handleResponseStarted(
+      responseStarted({ responseHeaders: undefined, ip: "104.16.4.3" }),
+    );
+    expect(adapter.sent.at(-1)?.message.notice).toMatchObject({ kind: "direct" });
+  });
+
   it("clears persisted activity without changing detection state", async () => {
     const { controller, navigationStore, repository } = await createHarness();
     await controller.handleBeforeRequest(beforeRequest());
@@ -1127,6 +1395,19 @@ describe("BackgroundController messages and actions", () => {
     finishInitialization();
     await Promise.all([starting, removing]);
 
+    await expect(navigationStore.get(8)).resolves.toBeUndefined();
+  });
+
+  it("keeps removal final when an earlier main-frame start is blocked on configuration", async () => {
+    const harness = await createHarness();
+    const { controller, navigationStore } = harness;
+    const blocked = await blockConfiguration(harness);
+
+    const starting = controller.handleBeforeRequest(beforeRequest());
+    const removing = controller.handleTabRemoved(8);
+    blocked.release();
+
+    await Promise.all([blocked.operation, starting, removing]);
     await expect(navigationStore.get(8)).resolves.toBeUndefined();
   });
 

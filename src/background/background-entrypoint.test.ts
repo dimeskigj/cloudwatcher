@@ -143,4 +143,28 @@ describe("background entrypoint", () => {
     await vi.waitFor(() => expect(consoleError).toHaveBeenCalledTimes(3));
     expect(consoleError).toHaveBeenCalledWith("Cloudwatcher background handler failed.", error);
   });
+
+  it("observes eager initialization rejection without hiding it from event handlers", async () => {
+    const initialization = deferred<void>();
+    const observeRejection = vi.spyOn(initialization.promise, "catch");
+    const error = new Error("initialization failed");
+    entrypoint.controller.initialize.mockReturnValue(initialization.promise);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await loadBackground();
+
+    expect(observeRejection).toHaveBeenCalledOnce();
+    const testObserver = initialization.promise.catch(() => undefined);
+    const [beforeRequest] = entrypoint.addBeforeRequest.mock.calls[0] ?? [];
+    const [onMessage] = entrypoint.addMessage.mock.calls[0] ?? [];
+    initialization.reject(error);
+    await testObserver;
+    await vi.waitFor(() => expect(consoleError).toHaveBeenCalledTimes(1));
+
+    expect(beforeRequest({ requestId: "main" })).toBeUndefined();
+    await vi.waitFor(() => expect(consoleError).toHaveBeenCalledTimes(2));
+    await expect(onMessage({ type: "options/get" }, {})).rejects.toBe(error);
+    expect(entrypoint.controller.handleBeforeRequest).not.toHaveBeenCalled();
+    expect(entrypoint.controller.handleMessage).not.toHaveBeenCalled();
+  });
 });
