@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import type { IgnoreRule } from "../../core/model";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 
@@ -17,6 +17,7 @@ export function IgnoredView({
   const [selected, setSelected] = useState<IgnoreRule>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const fallback = useRef<HTMLInputElement>(null);
   const matching = rules.filter((rule) =>
     ruleLabel(rule).trim().toLowerCase().includes(query.trim().toLowerCase()),
   );
@@ -42,6 +43,7 @@ export function IgnoredView({
       <label class="options__search">
         <span>Search ignored sites</span>
         <input
+          ref={fallback}
           value={query}
           type="search"
           onInput={(event) => setQuery(event.currentTarget.value)}
@@ -78,6 +80,7 @@ export function IgnoredView({
       {selected === undefined ? null : (
         <ConfirmationDialog
           labelledBy="remove-rule-heading"
+          fallback={fallback}
           confirmLabel={pending ? "Removing rule…" : "Remove rule"}
           pending={pending}
           onCancel={() => !pending && setSelected(undefined)}

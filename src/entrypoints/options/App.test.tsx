@@ -165,6 +165,7 @@ describe("options views", () => {
       type: "options/remove-ignore",
       rule: { scope: "host", value: "cdn.example.com" },
     });
+    await waitFor(() => expect(screen.getByLabelText("Search ignored sites")).toHaveFocus());
   });
 
   it("uses native dialog lifecycle and restores the remove opener after cancel", async () => {
@@ -204,6 +205,7 @@ describe("options views", () => {
       type: "options/clear-activity",
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Activity" })).toHaveFocus();
   });
 
   it("explains empty shared rules and activity without exposing URL history", async () => {
@@ -237,7 +239,39 @@ describe("options recovery, accessibility, and visual contracts", () => {
       section: "settings",
     });
     expect(runtime.browser.runtime.sendMessage).toHaveBeenLastCalledWith({ type: "options/get" });
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Reset this section" })).toHaveFocus(),
+    );
     expect(screen.queryByRole("tab", { name: /IP ranges/i })).not.toBeInTheDocument();
+  });
+
+  it.each(["settings", "ignoreRules", "summaries"] as const)(
+    "targets the %s diagnostic reset section",
+    async (section) => {
+      mockDialogs();
+      const user = userEvent.setup();
+      renderOptions({
+        ...snapshot,
+        diagnostics: [{ section, message: `${section} needs recovery.` }],
+      });
+      await user.click(await screen.findByRole("button", { name: "Reset this section" }));
+      await user.click(
+        within(screen.getByRole("dialog")).getByRole("button", { name: "Reset section" }),
+      );
+      expect(runtime.browser.runtime.sendMessage).toHaveBeenCalledWith({
+        type: "options/reset-section",
+        section,
+      });
+    },
+  );
+
+  it("keeps an IP ranges diagnostic informational", async () => {
+    renderOptions({
+      ...snapshot,
+      diagnostics: [{ section: "ipRanges", message: "Ranges need recovery." }],
+    });
+    expect(await screen.findByRole("alert")).toHaveTextContent("Ranges need recovery.");
+    expect(screen.queryByRole("button", { name: "Reset this section" })).not.toBeInTheDocument();
   });
 
   it.each([

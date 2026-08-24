@@ -4,6 +4,7 @@ import { useLayoutEffect, useRef } from "preact/hooks";
 export function ConfirmationDialog({
   children,
   confirmLabel,
+  fallback,
   labelledBy,
   onCancel,
   onConfirm,
@@ -11,6 +12,7 @@ export function ConfirmationDialog({
 }: {
   children: ComponentChildren;
   confirmLabel: string;
+  fallback: { current: HTMLElement | null };
   labelledBy: string;
   onCancel: () => void;
   onConfirm: () => void;
@@ -31,7 +33,7 @@ export function ConfirmationDialog({
     return () => {
       if (typeof current.close === "function") current.close();
       else current.removeAttribute("open");
-      opener.current?.focus();
+      (opener.current?.isConnected ? opener.current : fallback.current)?.focus();
     };
   }, []);
 

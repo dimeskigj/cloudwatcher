@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import type { DomainSummary } from "../../core/model";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 
@@ -18,6 +18,7 @@ export function ActivityView({
   const [confirming, setConfirming] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
+  const fallback = useRef<HTMLHeadingElement>(null);
   const rows = Object.entries(summaries).sort(([, a], [, b]) =>
     b.lastSeenAt.localeCompare(a.lastSeenAt),
   );
@@ -41,7 +42,9 @@ export function ActivityView({
     <section aria-labelledby="activity-heading">
       <div class="options__section-heading">
         <div>
-          <h2 id="activity-heading">Activity</h2>
+          <h2 ref={fallback} id="activity-heading" tabIndex={-1}>
+            Activity
+          </h2>
           <p class="options__intro">
             Counts are stored locally by domain. No detailed URL history is stored.
           </p>
@@ -96,6 +99,7 @@ export function ActivityView({
       {confirming ? (
         <ConfirmationDialog
           labelledBy="clear-activity-heading"
+          fallback={fallback}
           confirmLabel={pending ? "Clearing activity…" : "Clear activity"}
           pending={pending}
           onCancel={() => !pending && setConfirming(false)}
