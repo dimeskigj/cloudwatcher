@@ -223,10 +223,15 @@ describe("options recovery, accessibility, and visual contracts", () => {
   it("recovers Task 9 diagnostics with a confirmed reset and refreshed snapshot", async () => {
     mockDialogs();
     const user = userEvent.setup();
-    renderOptions({
+    const diagnosticSnapshot = {
       ...snapshot,
       diagnostics: [{ section: "settings", message: "Saved settings need recovery." }],
-    });
+    };
+    runtime.browser.runtime.sendMessage
+      .mockResolvedValueOnce(success(diagnosticSnapshot))
+      .mockResolvedValueOnce(success(undefined))
+      .mockResolvedValueOnce(success({ ...snapshot, diagnostics: [] }));
+    render(<App />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Saved settings need recovery.");
     await user.click(screen.getByRole("button", { name: "Reset this section" }));
@@ -239,9 +244,7 @@ describe("options recovery, accessibility, and visual contracts", () => {
       section: "settings",
     });
     expect(runtime.browser.runtime.sendMessage).toHaveBeenLastCalledWith({ type: "options/get" });
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Reset this section" })).toHaveFocus(),
-    );
+    await waitFor(() => expect(screen.getByRole("tabpanel")).toHaveFocus());
     expect(screen.queryByRole("tab", { name: /IP ranges/i })).not.toBeInTheDocument();
   });
 

@@ -33,7 +33,7 @@ export function App() {
   const [resetting, setResetting] = useState<StorageDiagnostic>();
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState<string>();
-  const recoveryFallback = useRef<HTMLElement>(null);
+  const panelFallback = useRef<HTMLElement>(null);
 
   async function load(): Promise<void> {
     setState({ kind: "loading" });
@@ -172,18 +172,15 @@ export function App() {
             ))}
           </div>
           <section
+            ref={panelFallback}
             class="options__view"
             id={`${view}-panel`}
             role="tabpanel"
             aria-labelledby={`${view}-tab`}
+            tabIndex={-1}
           >
             {state.data.diagnostics.length > 0 ? (
-              <section
-                ref={recoveryFallback}
-                class="options__diagnostics"
-                aria-label="Storage diagnostics"
-                tabIndex={-1}
-              >
+              <section class="options__diagnostics" aria-label="Storage diagnostics">
                 {state.data.diagnostics.map((diagnostic) => {
                   const resettable = (
                     ["settings", "ignoreRules", "summaries"] as StorageSection[]
@@ -219,7 +216,7 @@ export function App() {
             {resetting === undefined ? null : (
               <ConfirmationDialog
                 labelledBy="reset-section-heading"
-                fallback={recoveryFallback}
+                fallback={panelFallback}
                 confirmLabel={resetPending ? "Resetting section…" : "Reset section"}
                 pending={resetPending}
                 onCancel={() => !resetPending && setResetting(undefined)}
