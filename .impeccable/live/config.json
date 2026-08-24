@@ -1,0 +1,6 @@
+{
+  "files": ["src/entrypoints/options/index.html", "src/entrypoints/popup/index.html"],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}
