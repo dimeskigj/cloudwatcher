@@ -41,5 +41,6 @@ jobs:
           path: |
             .output/cloudwatcher-*-chrome.zip
             .output/cloudwatcher-*-firefox.zip
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
