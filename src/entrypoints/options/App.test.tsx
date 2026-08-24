@@ -74,10 +74,13 @@ describe("options loading and warnings", () => {
     expect(await screen.findByRole("heading", { name: "Warnings" })).toBeVisible();
     expect(screen.getByLabelText("Direct-site notice")).toHaveValue("overlay");
     expect(screen.getByLabelText("Content notice")).toHaveValue("banner");
-    expect(screen.getByText("Blocks the page until you dismiss the notice.")).toBeVisible();
-    expect(screen.getByText("Shows a compact notice without blocking the page.")).toBeVisible();
     expect(
-      screen.getByText("Off shows no notice and still records activity locally."),
+      screen.getByText(
+        "Overlay blocks the page until you dismiss the notice. Banner is non-blocking. Off still records activity locally.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.getByText("Banner is non-blocking. Off still records activity locally."),
     ).toBeVisible();
     expect(runtime.browser.runtime.sendMessage).toHaveBeenCalledWith({ type: "options/get" });
   });
