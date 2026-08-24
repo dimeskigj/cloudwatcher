@@ -134,9 +134,9 @@ body {
   display: grid;
   grid-template-columns: minmax(11rem, 0.35fr) minmax(12rem, 0.4fr) minmax(0, 1fr);
   align-items: center;
-  gap: 16px;
+  gap: 32px;
   border-top: 1px solid var(--cw-line);
-  padding: 16px 0;
+  padding: 16px 32px;
 }
 .options__setting-row legend {
   padding: 0;
