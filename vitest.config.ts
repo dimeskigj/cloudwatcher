@@ -8,5 +8,8 @@ export default defineConfig({
     exclude: ["e2e/**", "**/node_modules/**"],
     setupFiles: ["./vitest.setup.ts"],
     restoreMocks: true,
+    coverage: {
+      reporter: ["text", "lcov"],
+    },
   },
 });
