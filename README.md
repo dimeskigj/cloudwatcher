@@ -28,6 +28,19 @@ npm run build
 
 `npm run build` produces both Chromium and Firefox builds. Run `npm run icons` after changing `public/icon-source.svg` to regenerate all required extension icons.
 
+## Release verification
+
+```sh
+source "$HOME/.nvm/nvm.sh"
+nvm use 26.7.0
+npm install
+npm run verify
+npm run test:e2e
+npm run package
+```
+
+See [the release testing matrix](docs/TESTING.md) for the required manual Firefox ESR and stable testing before publishing.
+
 ## IP management
 
 Cloudwatcher starts with bundled Cloudflare CIDR ranges. In Options, you can replace the range list with your own valid CIDRs. It never looks up or automatically fetches ranges. You can also explicitly ignore a host or its site; this suppresses Cloudwatcher notices without changing network traffic.
