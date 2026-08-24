@@ -13,6 +13,7 @@
     "prepare": "wxt prepare",
     "test": "vitest run",
     "test:watch": "vitest",
+    "icons": "node scripts/generate-icons.mjs",
     "lint": "biome check .",
     "format": "biome check --write .",
     "typecheck": "wxt prepare && tsc --noEmit",
@@ -34,6 +35,7 @@
     "@types/node": "^26.2.0",
     "axe-core": "^4.13.0",
     "jsdom": "^30.0.1",
+    "sharp": "^0.35.3",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
     "wxt": "^0.21.4"
