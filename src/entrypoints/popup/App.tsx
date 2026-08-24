@@ -112,9 +112,14 @@ export function App() {
           class="popup__button popup__button--primary"
           type="button"
           disabled={openingSettings}
+          aria-busy={openingSettings ? "true" : "false"}
           onClick={() => void openSettings()}
         >
-          Open Cloudwatcher settings
+          {openingSettings
+            ? "Opening settings…"
+            : settingsError
+              ? "Try opening settings again"
+              : "Open Cloudwatcher settings"}
         </button>
       </footer>
     </main>

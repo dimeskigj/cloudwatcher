@@ -69,6 +69,16 @@ function success(data: PopupState): RuntimeResponse<PopupState> {
   return { ok: true, data };
 }
 
+function deferred<T>() {
+  let reject: (reason?: unknown) => void = () => undefined;
+  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    reject = rejectPromise;
+    resolve = resolvePromise;
+  });
+  return { promise, reject, resolve };
+}
+
 function renderPopup(response: RuntimeResponse<PopupState> | Promise<RuntimeResponse<PopupState>>) {
   runtime.browser.tabs.query.mockResolvedValue([{ id: 42 }]);
   runtime.browser.runtime.sendMessage.mockReturnValue(response);
@@ -163,23 +173,42 @@ describe("popup state loading", () => {
 });
 
 describe("popup interaction and accessibility", () => {
-  it("opens settings from keyboard activation and disables the button while opening", async () => {
+  it("announces settings opening, recovers from an error, and restores the default after retry", async () => {
     const user = userEvent.setup();
-    let resolveOpen: () => void = () => undefined;
-    runtime.browser.runtime.openOptionsPage.mockReturnValue(
-      new Promise<void>((resolve) => {
-        resolveOpen = resolve;
-      }),
-    );
+    const firstOpen = deferred<void>();
+    const retryOpen = deferred<void>();
+    runtime.browser.runtime.openOptionsPage
+      .mockReturnValueOnce(firstOpen.promise)
+      .mockReturnValueOnce(retryOpen.promise);
     renderPopup(success(directState));
 
     const settings = await screen.findByRole("button", { name: "Open Cloudwatcher settings" });
     settings.focus();
     await user.keyboard("{Enter}");
     expect(runtime.browser.runtime.openOptionsPage).toHaveBeenCalledOnce();
-    expect(settings).toBeDisabled();
-    resolveOpen();
-    await waitFor(() => expect(settings).toBeEnabled());
+    expect(screen.getByRole("button", { name: "Opening settings…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Opening settings…" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    firstOpen.reject(new Error("Options unavailable"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Cloudwatcher could not open settings.",
+    );
+    expect(screen.getByRole("button", { name: "Try opening settings again" })).toBeEnabled();
+
+    await user.click(screen.getByRole("button", { name: "Try opening settings again" }));
+    expect(screen.getByRole("button", { name: "Opening settings…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Opening settings…" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+    retryOpen.resolve();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Open Cloudwatcher settings" })).toBeEnabled(),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Site uses Cloudflare" })).toBeVisible();
   });
 
   it.each([
