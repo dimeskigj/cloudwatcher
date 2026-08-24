@@ -64,6 +64,7 @@ export function Notice({ notice, onAction }: NoticeProps) {
   const headingId = useId();
   const descriptionId = useId();
   const chooserId = useId();
+  const detailsId = useId();
   const noticeRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const continueRef = useRef<HTMLButtonElement>(null);
@@ -71,6 +72,7 @@ export function Notice({ notice, onAction }: NoticeProps) {
   const firstChoiceRef = useRef<HTMLButtonElement>(null);
   const restoreIgnoreFocus = useRef(false);
   const [choosingIgnore, setChoosingIgnore] = useState(false);
+  const [showingDetails, setShowingDetails] = useState(false);
   const [pending, setPending] = useState(false);
   const [hasError, setHasError] = useState(false);
   const isOverlay = notice.mode === "overlay";
@@ -195,6 +197,86 @@ export function Notice({ notice, onAction }: NoticeProps) {
   const panelProps = isOverlay
     ? ({ role: "dialog", "aria-modal": "true" } as const)
     : ({ role: "region" } as const);
+  const readout = (
+    <dl class="notice__readout" aria-label="Detection details">
+      <dt>Site </dt>
+      <dd>
+        <code>{notice.siteHost}</code>
+      </dd>
+      {notice.kind === "content" && notice.resourceHost !== undefined ? (
+        <>
+          <dt>Observed host </dt>
+          <dd>
+            <code>{notice.resourceHost}</code>
+          </dd>
+        </>
+      ) : null}
+      {notice.evidence.length > 0 ? (
+        <>
+          <dt>Evidence</dt>
+          <dd class="notice__evidence">
+            {notice.evidence.map((evidence, index) => (
+              <span key={`${evidence.kind}-${index}`}>{evidenceLabel(evidence)}</span>
+            ))}
+          </dd>
+        </>
+      ) : null}
+    </dl>
+  );
+  const secondaryActions = (
+    <>
+      <button
+        class="notice__button"
+        type="button"
+        disabled={pending}
+        onClick={() => void performAction({ type: "leave" })}
+      >
+        Go back
+      </button>
+      <button
+        ref={ignoreRef}
+        class="notice__button notice__button--quiet"
+        type="button"
+        aria-expanded={choosingIgnore}
+        aria-controls={choosingIgnore ? chooserId : undefined}
+        disabled={pending}
+        onClick={() => setChoosingIgnore(true)}
+      >
+        Don't warn here again
+      </button>
+    </>
+  );
+  const ignoreChooser = choosingIgnore ? (
+    <fieldset id={chooserId} class="notice__chooser">
+      <legend class="notice__chooser-label">Stop future notices for</legend>
+      <div class="notice__choices">
+        {notice.ignoreChoices.map((choice, index) => (
+          <button
+            ref={index === 0 ? firstChoiceRef : undefined}
+            class="notice__button notice__choice"
+            type="button"
+            disabled={pending}
+            onClick={() => void performAction({ type: "ignore", rule: choice.rule })}
+            key={`${choice.rule.scope}:${choice.rule.value}`}
+          >
+            {choice.label}
+          </button>
+        ))}
+        <button
+          class="notice__button notice__button--quiet"
+          type="button"
+          disabled={pending}
+          onClick={() => {
+            restoreIgnoreFocus.current = true;
+            setChoosingIgnore(false);
+            setHasError(false);
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </fieldset>
+  ) : null;
 
   return (
     <div ref={noticeRef} class={`notice notice--${notice.mode}`}>
@@ -219,31 +301,7 @@ export function Notice({ notice, onAction }: NoticeProps) {
             <h1 id={headingId}>{heading}</h1>
             <p id={descriptionId}>{description}</p>
           </div>
-
-          <dl class="notice__readout" aria-label="Detection details">
-            <dt>Site </dt>
-            <dd>
-              <code>{notice.siteHost}</code>
-            </dd>
-            {notice.kind === "content" && notice.resourceHost !== undefined ? (
-              <>
-                <dt>Observed host </dt>
-                <dd>
-                  <code>{notice.resourceHost}</code>
-                </dd>
-              </>
-            ) : null}
-            {notice.evidence.length > 0 ? (
-              <>
-                <dt>Evidence</dt>
-                <dd class="notice__evidence">
-                  {notice.evidence.map((evidence, index) => (
-                    <span key={`${evidence.kind}-${index}`}>{evidenceLabel(evidence)}</span>
-                  ))}
-                </dd>
-              </>
-            ) : null}
-          </dl>
+          {isOverlay ? readout : null}
         </div>
 
         <div class="notice__actions">
@@ -256,57 +314,28 @@ export function Notice({ notice, onAction }: NoticeProps) {
           >
             Continue once
           </button>
-          <button
-            class="notice__button"
-            type="button"
-            disabled={pending}
-            onClick={() => void performAction({ type: "leave" })}
-          >
-            Go back
-          </button>
-          <button
-            ref={ignoreRef}
-            class="notice__button notice__button--quiet"
-            type="button"
-            aria-expanded={choosingIgnore}
-            aria-controls={choosingIgnore ? chooserId : undefined}
-            disabled={pending}
-            onClick={() => setChoosingIgnore(true)}
-          >
-            Don't warn here again
-          </button>
+          {isOverlay ? secondaryActions : null}
+          {!isOverlay ? (
+            <button
+              class="notice__button notice__button--quiet"
+              type="button"
+              aria-expanded={showingDetails}
+              aria-controls={detailsId}
+              disabled={pending}
+              onClick={() => setShowingDetails((showing) => !showing)}
+            >
+              {showingDetails ? "Hide details" : "Show details"}
+            </button>
+          ) : null}
         </div>
 
-        {choosingIgnore ? (
-          <fieldset id={chooserId} class="notice__chooser">
-            <legend class="notice__chooser-label">Stop future notices for</legend>
-            <div class="notice__choices">
-              {notice.ignoreChoices.map((choice, index) => (
-                <button
-                  ref={index === 0 ? firstChoiceRef : undefined}
-                  class="notice__button notice__choice"
-                  type="button"
-                  disabled={pending}
-                  onClick={() => void performAction({ type: "ignore", rule: choice.rule })}
-                  key={`${choice.rule.scope}:${choice.rule.value}`}
-                >
-                  {choice.label}
-                </button>
-              ))}
-              <button
-                class="notice__button notice__button--quiet"
-                type="button"
-                disabled={pending}
-                onClick={() => {
-                  restoreIgnoreFocus.current = true;
-                  setChoosingIgnore(false);
-                  setHasError(false);
-                }}
-              >
-                Cancel
-              </button>
-            </div>
-          </fieldset>
+        {isOverlay ? ignoreChooser : null}
+        {!isOverlay && showingDetails ? (
+          <div id={detailsId} class="notice__details">
+            {readout}
+            <div class="notice__secondary-actions">{secondaryActions}</div>
+            {ignoreChooser}
+          </div>
         ) : null}
 
         {hasError ? (

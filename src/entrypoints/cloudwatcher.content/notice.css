@@ -82,7 +82,7 @@
 
 .notice--banner .notice__panel {
   width: min(1120px, calc(100vw - 24px));
-  max-height: calc(100vh - 24px);
+  max-height: min(288px, calc(100vh - 24px));
   pointer-events: auto;
   padding: 16px 18px;
   box-shadow:
@@ -125,10 +125,7 @@
 }
 
 .notice--banner .notice__body {
-  display: grid;
-  grid-template-columns: minmax(260px, 1.25fr) minmax(260px, 1fr);
-  gap: 24px;
-  align-items: start;
+  flex: 1 1 360px;
 }
 
 .notice__message {
@@ -174,7 +171,7 @@
 }
 
 .notice--banner .notice__readout {
-  margin: 0;
+  margin: 14px 0 0;
 }
 
 .notice__readout dt {
@@ -219,7 +216,39 @@
 }
 
 .notice--banner .notice__actions {
+  align-items: center;
   justify-content: flex-end;
+  margin-top: 0;
+}
+
+.notice--banner .notice__identity,
+.notice--banner .notice__body,
+.notice--banner .notice__actions {
+  display: flex;
+}
+
+.notice--banner .notice__panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 18px;
+}
+
+.notice--banner .notice__identity {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.notice__details {
+  flex: 1 0 100%;
+  border-top: 1px solid var(--cw-line);
+  padding-top: 14px;
+}
+
+.notice__secondary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-top: 14px;
 }
 
@@ -340,8 +369,7 @@
     padding: 12px;
   }
 
-  .notice__panel,
-  .notice--banner .notice__panel {
+  .notice__panel {
     width: calc(100vw - 24px);
     max-height: calc(100vh - 24px);
     padding: 16px;
@@ -353,19 +381,18 @@
 
   .notice--banner .notice__panel {
     width: calc(100vw - 16px);
-    max-height: calc(100vh - 16px);
+    max-height: min(288px, calc(100vh - 16px));
   }
 
   .notice--banner .notice__body {
-    display: block;
+    flex-basis: 100%;
   }
 
-  .notice--banner .notice__readout {
-    margin-top: 14px;
+  .notice--banner .notice__identity {
+    flex: 1 1 auto;
   }
 
   .notice__actions,
-  .notice--banner .notice__actions,
   .notice__choices {
     flex-direction: column;
     align-items: stretch;
@@ -373,6 +400,17 @@
 
   .notice__button {
     width: 100%;
+  }
+
+  .notice--banner .notice__actions,
+  .notice--banner .notice__secondary-actions,
+  .notice--banner .notice__choices {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .notice--banner .notice__button {
+    width: auto;
   }
 }
 

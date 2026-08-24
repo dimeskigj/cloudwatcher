@@ -124,9 +124,9 @@ describe("Notice content and semantics", () => {
     expect(banner).toHaveTextContent(
       "Cloudwatcher observed a Cloudflare signal in content loaded by this page.",
     );
-    expect(banner).toHaveTextContent("Site news.example.com");
-    expect(banner).toHaveTextContent("Observed host cdn.example.net");
-    expect(banner).toHaveTextContent("CF-Cache-Status header");
+    expect(banner).not.toHaveTextContent("Site news.example.com");
+    expect(banner).not.toHaveTextContent("Observed host cdn.example.net");
+    expect(banner).not.toHaveTextContent("CF-Cache-Status header");
     expect(banner).not.toHaveTextContent("https://");
     expect(document.activeElement).toBe(pageButton);
   });
@@ -144,6 +144,29 @@ describe("Notice content and semantics", () => {
     );
     expect(within(banner).queryByText("Observed host")).not.toBeInTheDocument();
     expect(document.activeElement).toBe(pageButton);
+  });
+
+  it("keeps banner details collapsed until requested", async () => {
+    const user = userEvent.setup();
+    render(<Notice notice={contentNotice} onAction={resolvedAction()} />);
+
+    expect(screen.getByRole("button", { name: "Continue once" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Show details" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+    expect(screen.queryByText("cdn.example.net")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Go back" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show details" }));
+
+    expect(screen.getByRole("button", { name: "Hide details" })).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    expect(screen.getByText("Observed host")).toBeVisible();
+    expect(screen.getByText("cdn.example.net")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Go back" })).toBeVisible();
   });
 
   it.each([
@@ -288,6 +311,7 @@ describe("Notice keyboard behavior", () => {
         expect(pageKeydown).toHaveBeenCalledOnce();
         pageKeydown.mockClear();
 
+        await user.click(screen.getByRole("button", { name: "Show details" }));
         screen.getByRole("button", { name: "Go back" }).focus();
         await user.keyboard("{Escape}");
         expect(onAction).toHaveBeenCalledOnce();
@@ -534,6 +558,8 @@ describe("notice stylesheet contract", () => {
   it("keeps banner hit testing local and defines narrow, dark, and reduced-motion behavior", () => {
     expect(noticeCss).toMatch(/\.notice--banner\s*{[^}]*pointer-events:\s*none/s);
     expect(noticeCss).toMatch(/\.notice--banner\s+\.notice__panel\s*{[^}]*pointer-events:\s*auto/s);
+    expect(noticeCss).toMatch(/\.notice--banner\s+\.notice__panel\s*{[^}]*max-height:\s*min\(/s);
+    expect(noticeCss).toMatch(/\.notice--banner\s+\.notice__actions\s*{[^}]*margin-top:\s*0/s);
     expect(noticeCss).toContain("@media (max-width: 640px)");
     expect(noticeCss).toContain("@media (prefers-color-scheme: dark)");
     expect(noticeCss).toContain("@media (prefers-reduced-motion: reduce)");
