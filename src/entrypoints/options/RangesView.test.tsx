@@ -68,7 +68,7 @@ describe("RangesView", () => {
     await user.click(screen.getByRole("button", { name: "Save IP ranges" }));
 
     await waitFor(() => expect(screen.getByLabelText("CIDR ranges")).toHaveValue("203.0.113.0/24"));
-    expect(screen.getByRole("button", { name: "Save IP ranges" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Saved" })).toBeDisabled();
   });
 
   it("explains intentional empty saved ranges as header-only detection", async () => {
@@ -116,7 +116,9 @@ describe("RangesView", () => {
     const unreadable = new File([""], "ranges.txt", { type: "text/plain" });
     vi.spyOn(unreadable, "text").mockRejectedValue(new Error("Read failed"));
     selectFile(input, unreadable);
-    expect(await screen.findByRole("alert")).toHaveTextContent("Read failed");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Cloudwatcher could not read this file. Try again.",
+    );
     expect(screen.getByLabelText("CIDR ranges")).toHaveValue("203.0.113.0/24");
   });
 

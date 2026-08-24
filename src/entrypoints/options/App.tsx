@@ -49,10 +49,10 @@ export function App() {
     setState({ kind: "loading" });
     try {
       setState({ kind: "ready", data: await request<OptionsSnapshot>({ type: "options/get" }) });
-    } catch (error) {
+    } catch {
       setState({
         kind: "error",
-        error: error instanceof Error ? error.message : "Cloudwatcher could not load settings.",
+        error: "Cloudwatcher could not load settings. Try again.",
       });
     }
   }

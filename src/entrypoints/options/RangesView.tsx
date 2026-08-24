@@ -20,6 +20,7 @@ export function RangesView({
   const [draft, setDraft] = useState(savedText);
   const [saved, setSaved] = useState(savedText);
   const [pending, setPending] = useState(false);
+  const [savedConfirmation, setSavedConfirmation] = useState(false);
   const [errors, setErrors] = useState<CidrError[]>();
   const [error, setError] = useState<string>();
   const [confirmation, setConfirmation] = useState<"discard" | "reset">();
@@ -33,6 +34,12 @@ export function RangesView({
 
   useEffect(() => onDirtyChange(draft !== saved), [draft, onDirtyChange, saved]);
 
+  useEffect(() => {
+    if (!savedConfirmation) return;
+    const timeout = window.setTimeout(() => setSavedConfirmation(false), 2000);
+    return () => window.clearTimeout(timeout);
+  }, [savedConfirmation]);
+
   async function save(): Promise<void> {
     setPending(true);
     setErrors(undefined);
@@ -42,10 +49,15 @@ export function RangesView({
       const text = replacement.join("\n");
       setDraft(text);
       setSaved(text);
+      setSavedConfirmation(true);
     } catch (cause) {
       const saveError = cause as RangeSaveError;
       setErrors(saveError.validationErrors);
-      setError(saveError.message || "Cloudwatcher could not save IP ranges.");
+      setError(
+        saveError.validationErrors === undefined
+          ? "Cloudwatcher could not save IP ranges. Try again."
+          : saveError.message || "Cloudwatcher could not save IP ranges.",
+      );
     } finally {
       setPending(false);
     }
@@ -64,12 +76,13 @@ export function RangesView({
       const text = await file.text();
       if (token !== importToken.current) return;
       setDraft(text);
+      setSavedConfirmation(false);
       setErrors(undefined);
       setError(undefined);
-    } catch (cause) {
+    } catch {
       if (token !== importToken.current) return;
       setErrors(undefined);
-      setError(cause instanceof Error ? cause.message : "Cloudwatcher could not read this file.");
+      setError("Cloudwatcher could not read this file. Try again.");
     }
   }
 
@@ -100,7 +113,10 @@ export function RangesView({
           disabled={pending}
           aria-describedby={errorDescription}
           aria-invalid={errors === undefined ? undefined : "true"}
-          onInput={(event) => setDraft(event.currentTarget.value)}
+          onInput={(event) => {
+            setSavedConfirmation(false);
+            setDraft(event.currentTarget.value);
+          }}
         />
       </label>
       {errors === undefined ? null : (
@@ -130,32 +146,38 @@ export function RangesView({
         <button
           class="options__primary"
           type="button"
-          disabled={pending || !dirty}
+          disabled={pending || !dirty || savedConfirmation}
           aria-busy={pending ? "true" : "false"}
           onClick={() => void save()}
         >
-          {pending ? "Saving IP ranges..." : "Save IP ranges"}
+          {pending ? "Saving IP ranges…" : savedConfirmation ? "Saved" : "Save IP ranges"}
         </button>
-        <label class="options__file-control">
-          <span>Import IP ranges</span>
-          <input
-            type="file"
-            accept=".txt,text/plain"
-            disabled={pending}
-            onChange={(event) => void importFile(event.currentTarget.files?.[0])}
-          />
-        </label>
-        <button type="button" disabled={pending} onClick={exportRanges}>
-          Export IP ranges
-        </button>
-        {dirty ? (
-          <button type="button" disabled={pending} onClick={() => setConfirmation("discard")}>
-            Discard range changes
+        <fieldset class="options__range-action-group">
+          <legend>Transfer ranges</legend>
+          <label class="options__file-control">
+            <span>Import IP ranges</span>
+            <input
+              type="file"
+              accept=".txt,text/plain"
+              disabled={pending}
+              onChange={(event) => void importFile(event.currentTarget.files?.[0])}
+            />
+          </label>
+          <button type="button" disabled={pending} onClick={exportRanges}>
+            Export IP ranges
           </button>
-        ) : null}
-        <button type="button" disabled={pending} onClick={() => setConfirmation("reset")}>
-          Reset draft to defaults
-        </button>
+        </fieldset>
+        <fieldset class="options__range-action-group">
+          <legend>Draft management</legend>
+          {dirty ? (
+            <button type="button" disabled={pending} onClick={() => setConfirmation("discard")}>
+              Discard range changes
+            </button>
+          ) : null}
+          <button type="button" disabled={pending} onClick={() => setConfirmation("reset")}>
+            Reset draft to defaults
+          </button>
+        </fieldset>
       </div>
       {confirmation === undefined ? null : (
         <ConfirmationDialog

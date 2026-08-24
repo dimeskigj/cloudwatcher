@@ -29,6 +29,12 @@ body {
   margin: 0;
   padding: var(--cw-space-3) var(--cw-space-2);
 }
+.popup__empty {
+  margin: var(--cw-space-2) 0 0;
+  color: var(--cw-muted);
+  font-size: 13px;
+  line-height: 18px;
+}
 
 .popup__status-heading {
   display: flex;

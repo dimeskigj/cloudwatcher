@@ -97,7 +97,7 @@ export function App() {
       ) : view.kind === "error" ? (
         <section class="popup__error" aria-labelledby="popup-error-heading">
           <h1 id="popup-error-heading">Detection unavailable</h1>
-          <p role="alert">Cloudwatcher could not check this tab.</p>
+          <p role="alert">Cloudwatcher could not inspect this tab. Try again.</p>
           <button class="popup__button" type="button" onClick={() => void load()}>
             Try again
           </button>
@@ -170,6 +170,9 @@ function Status({ state }: { state: PopupState }) {
           <dd>{contentVisits}</dd>
         </div>
       </dl>
+      {state.summary === undefined ? (
+        <p class="popup__empty">No observations have been recorded for this site yet.</p>
+      ) : null}
     </section>
   );
 }

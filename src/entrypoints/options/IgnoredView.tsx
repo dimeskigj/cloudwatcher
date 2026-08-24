@@ -29,8 +29,8 @@ export function IgnoredView({
     try {
       await onRemove(selected);
       setSelected(undefined);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Cloudwatcher could not remove that rule.");
+    } catch {
+      setError("Cloudwatcher could not remove that ignored site. Try again.");
     } finally {
       setPending(false);
     }

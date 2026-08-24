@@ -74,6 +74,11 @@ describe("options loading and warnings", () => {
     expect(await screen.findByRole("heading", { name: "Warnings" })).toBeVisible();
     expect(screen.getByLabelText("Direct-site notice")).toHaveValue("overlay");
     expect(screen.getByLabelText("Content notice")).toHaveValue("banner");
+    expect(screen.getByText("Blocks the page until you dismiss the notice.")).toBeVisible();
+    expect(screen.getByText("Shows a compact notice without blocking the page.")).toBeVisible();
+    expect(
+      screen.getByText("Off shows no notice and still records activity locally."),
+    ).toBeVisible();
     expect(runtime.browser.runtime.sendMessage).toHaveBeenCalledWith({ type: "options/get" });
   });
 
@@ -90,6 +95,7 @@ describe("options loading and warnings", () => {
       type: "options/update-settings",
       settings: { directNoticeMode: "banner", contentNoticeMode: "banner" },
     });
+    expect(await screen.findByRole("button", { name: "Saved" })).toBeDisabled();
   });
 
   it("keeps the warning draft after a failed save and allows retry", async () => {
@@ -103,7 +109,9 @@ describe("options loading and warnings", () => {
 
     await user.selectOptions(screen.getByLabelText("Direct-site notice"), "banner");
     await user.click(screen.getByRole("button", { name: "Save warning settings" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Settings are unavailable");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Cloudwatcher could not save warning settings. Try again.",
+    );
     expect(screen.getByLabelText("Direct-site notice")).toHaveValue("banner");
 
     await user.click(screen.getByRole("button", { name: "Save warning settings" }));
@@ -251,7 +259,9 @@ describe("options views", () => {
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Remove rule" }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Remove failed");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Cloudwatcher could not remove that ignored site. Try again.",
+    );
     expect(screen.getByRole("dialog")).toBeVisible();
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Remove rule" }),
@@ -298,7 +308,9 @@ describe("options views", () => {
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Clear activity" }),
     );
-    expect(await screen.findByRole("alert")).toHaveTextContent("Clear failed");
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Cloudwatcher could not clear local activity. Try again.",
+    );
     await user.click(
       within(screen.getByRole("dialog")).getByRole("button", { name: "Clear activity" }),
     );
@@ -313,7 +325,7 @@ describe("options views", () => {
     await user.click(screen.getByRole("tab", { name: "Ignored sites" }));
     expect(await screen.findByText(/No sites are ignored/i)).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "Activity" }));
-    expect(await screen.findAllByText(/No detailed URL history is stored/i)).toHaveLength(2);
+    expect(await screen.findAllByText(/No detailed URL history is stored/i)).toHaveLength(1);
   });
 });
 

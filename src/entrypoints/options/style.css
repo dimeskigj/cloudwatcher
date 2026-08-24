@@ -185,9 +185,28 @@ body {
 .options__range-actions {
   display: flex;
   flex-wrap: wrap;
-  align-items: end;
+  align-items: start;
   gap: 12px;
   margin-top: 24px;
+}
+.options__range-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  margin: 0;
+  border: 0;
+  padding: 0 0 0 12px;
+}
+.options__range-action-group + .options__range-action-group {
+  border-left: 1px solid var(--cw-line);
+}
+.options__range-action-group legend {
+  width: 100%;
+  padding: 0;
+  color: var(--cw-muted);
+  font-size: 13px;
+  font-weight: 700;
 }
 .options__file-control input {
   max-width: 260px;

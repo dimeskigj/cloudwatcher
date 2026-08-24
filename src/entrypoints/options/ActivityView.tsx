@@ -29,10 +29,8 @@ export function ActivityView({
     try {
       await onClear();
       setConfirming(false);
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Cloudwatcher could not clear local activity.",
-      );
+    } catch {
+      setError("Cloudwatcher could not clear local activity. Try again.");
     } finally {
       setPending(false);
     }
@@ -61,11 +59,7 @@ export function ActivityView({
           </button>
         ) : null}
       </div>
-      {rows.length === 0 ? (
-        <p class="options__empty">
-          No activity has been recorded. No detailed URL history is stored.
-        </p>
-      ) : null}
+      {rows.length === 0 ? <p class="options__empty">No activity has been recorded yet.</p> : null}
       {rows.length > 0 ? (
         <div class="options__table-wrap">
           <table>

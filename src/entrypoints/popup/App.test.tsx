@@ -165,7 +165,7 @@ describe("popup state loading", () => {
     render(<App />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Cloudwatcher could not check this tab.",
+      "Cloudwatcher could not inspect this tab. Try again.",
     );
     await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("heading", { name: "Site uses Cloudflare" })).toBeVisible();
