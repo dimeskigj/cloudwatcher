@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-24T22:57:13+02:00",
+  "title": "Design System: Cloudwatcher",
+  "extensions": {
+    "colorMeta": {
+      "porcelain": {
+        "role": "neutral",
+        "displayName": "Porcelain",
+        "canonical": "oklch(0.985 0 0)",
+        "tonalRamp": [
+          "oklch(0.15 0 0)",
+          "oklch(0.27 0 0)",
+          "oklch(0.39 0 0)",
+          "oklch(0.51 0 0)",
+          "oklch(0.63 0 0)",
+          "oklch(0.75 0 0)",
+          "oklch(0.87 0 0)",
+          "oklch(0.985 0 0)"
+        ]
+      },
+      "signal": {
+        "role": "primary",
+        "displayName": "Signal Red",
+        "canonical": "oklch(0.489 0.19 28.3)",
+        "tonalRamp": [
+          "oklch(0.15 0.19 28.3)",
+          "oklch(0.27 0.19 28.3)",
+          "oklch(0.39 0.19 28.3)",
+          "oklch(0.489 0.19 28.3)",
+          "oklch(0.61 0.19 28.3)",
+          "oklch(0.73 0.19 28.3)",
+          "oklch(0.85 0.19 28.3)",
+          "oklch(0.95 0.19 28.3)"
+        ]
+      },
+      "observed": {
+        "role": "secondary",
+        "displayName": "Observed Teal",
+        "canonical": "oklch(0.47 0.08 190)",
+        "tonalRamp": [
+          "oklch(0.15 0.08 190)",
+          "oklch(0.27 0.08 190)",
+          "oklch(0.39 0.08 190)",
+          "oklch(0.47 0.08 190)",
+          "oklch(0.59 0.08 190)",
+          "oklch(0.71 0.08 190)",
+          "oklch(0.83 0.08 190)",
+          "oklch(0.95 0.08 190)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "headline": { "displayName": "Options Headline", "purpose": "Primary page-level titles." },
+      "title": {
+        "displayName": "Panel Title",
+        "purpose": "Notices, popup status, and section headings."
+      },
+      "body": { "displayName": "Body", "purpose": "Explanatory and status copy." },
+      "label": { "displayName": "Label", "purpose": "Controls, tabs, and compact metadata." }
+    },
+    "shadows": [
+      {
+        "name": "notice-overlay",
+        "value": "0 18px 48px oklch(0.08 0 0 / 0.24), 0 2px 8px oklch(0.08 0 0 / 0.24)",
+        "purpose": "Contain a page-blocking notice over its scrim."
+      },
+      {
+        "name": "notice-banner",
+        "value": "0 8px 24px oklch(0.08 0 0 / 0.24), 0 1px 4px oklch(0.08 0 0 / 0.24)",
+        "purpose": "Separate a compact banner without making it theatrical."
+      }
+    ],
+    "motion": [
+      {
+        "name": "control-feedback",
+        "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "Button and disclosure feedback; disabled under reduced motion."
+      }
+    ],
+    "breakpoints": [
+      { "name": "compact", "value": "280px" },
+      { "name": "mobile", "value": "640px" },
+      { "name": "options-rail", "value": "800px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The explicit next action in a setting, notice, or popup.",
+      "html": "<button class=\"ds-button ds-button--primary\">Continue once</button>",
+      "css": ".ds-button { min-height: 44px; border: 1px solid oklch(0.8 0 0); border-radius: 6px; padding: 8px 13px; background: oklch(0.985 0 0); color: oklch(0.19 0 0); font: 700 14px/20px system-ui, sans-serif; cursor: pointer; transition: background-color 180ms cubic-bezier(0.22, 1, 0.36, 1); } .ds-button:focus-visible { outline: 2px solid oklch(0.489 0.19 28.3); outline-offset: 2px; } .ds-button--primary { border-color: oklch(0.489 0.19 28.3); background: oklch(0.489 0.19 28.3); color: oklch(1 0 0); } .ds-button--primary:hover { background: oklch(0.445 0.18 28.3); }"
+    },
+    {
+      "name": "Evidence Readout",
+      "kind": "custom",
+      "refersTo": "status-readout",
+      "description": "A compact factual record for a site, host, or detection signal.",
+      "html": "<dl class=\"ds-readout\"><dt>Evidence</dt><dd>CF-Ray header</dd><dt>Site</dt><dd>example.com</dd></dl>",
+      "css": ".ds-readout { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; margin: 0; border-top: 1px solid oklch(0.8 0 0); border-bottom: 1px solid oklch(0.8 0 0); padding: 14px 0; font: 12px/18px system-ui, sans-serif; } .ds-readout dt { color: oklch(0.43 0 0); font-weight: 650; } .ds-readout dd { min-width: 0; margin: 0; color: oklch(0.19 0 0); overflow-wrap: anywhere; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }"
+    },
+    {
+      "name": "Observed Pill",
+      "kind": "chip",
+      "refersTo": "status-pill",
+      "description": "A concise informational marker for an observed or ignored state.",
+      "html": "<span class=\"ds-pill\">Observed</span>",
+      "css": ".ds-pill { display: inline-block; border: 1px solid oklch(0.47 0.08 190); border-radius: 999px; padding: 3px 7px; color: oklch(0.47 0.08 190); font: 700 12px/16px system-ui, sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Field Notebook",
+    "overview": "Cloudwatcher presents observed delivery facts with the discipline of a well-kept field notebook: factual headings, compact evidence, durable local records, and controls that never obscure what happened. Its restrained monochrome base lets the red signal and teal observed state carry their precise semantic jobs.",
+    "keyCharacteristics": [
+      "Evidence first, controls second.",
+      "One compact system sans with a monospaced treatment for hosts and technical evidence.",
+      "Flat structural surfaces with thin dividers and purposeful tonal changes.",
+      "Signal color is reserved for primary action and current selection.",
+      "Responsive density preserves clear reading and keyboard operation."
+    ],
+    "rules": [
+      {
+        "name": "The Evidence, Not Decoration Rule",
+        "body": "Signal Red and Observed Teal are semantic instruments. Never use them as ambient decoration, large surface fills, or a generic brand wash.",
+        "section": "colors"
+      },
+      {
+        "name": "The Readout Rule",
+        "body": "Use monospace only for factual values such as hostnames, CIDRs, and technical signals. Never use it for headings, buttons, or explanatory copy.",
+        "section": "typography"
+      },
+      {
+        "name": "The Structural Depth Rule",
+        "body": "If a border and tonal layer can explain hierarchy, use them. Shadows belong only to page-blocking or floating surfaces.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "Do put observed evidence, hostnames, and meaningful state before secondary controls.",
+      "Do use Signal Red for primary actions, keyboard focus, and current selection only.",
+      "Do keep controls at least 44px high and preserve clear hover, focus, active, disabled, pending, and error states."
+    ],
+    "donts": [
+      "Don't use generic SaaS dashboard styling, decorative metrics, bloated navigation, or corporate admin-panel conventions.",
+      "Don't use red or teal as large decorative backgrounds, gradients, or decoration unrelated to a semantic state.",
+      "Don't put technical mono type in general copy, buttons, or navigation."
+    ]
+  }
+}
