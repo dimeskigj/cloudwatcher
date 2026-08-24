@@ -1,28 +1,36 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { browser } from "wxt/browser";
+import type { CidrError } from "../../core/cidr";
 import type { RuntimeResponse } from "../../core/messages";
-import type {
-  IgnoreRule,
-  OptionsSnapshot,
-  Settings,
-  StorageDiagnostic,
-  StorageSection,
-} from "../../core/model";
+import type { IgnoreRule, OptionsSnapshot, Settings, StorageDiagnostic } from "../../core/model";
 import { ActivityView } from "./ActivityView";
 import { ConfirmationDialog } from "./ConfirmationDialog";
 import { IgnoredView } from "./IgnoredView";
+import { RangesView } from "./RangesView";
 import { WarningsView } from "./WarningsView";
 
-type View = "warnings" | "ignored" | "activity";
+type View = "warnings" | "ignored" | "activity" | "ranges";
 type LoadState =
   | { kind: "loading" }
   | { kind: "error"; error: string }
   | { kind: "ready"; data: OptionsSnapshot };
 
+function sectionLabel(section: StorageDiagnostic["section"]): string {
+  return section === "ignoreRules"
+    ? "Ignored sites"
+    : section === "ipRanges"
+      ? "IP ranges"
+      : section === "summaries"
+        ? "Activity"
+        : "Warnings";
+}
+
 async function request<T>(message: unknown): Promise<T> {
   const response = (await browser.runtime.sendMessage(message)) as RuntimeResponse<T>;
   if (!response.ok) {
-    throw new Error(response.error);
+    const error = new Error(response.error) as Error & { validationErrors?: CidrError[] };
+    error.validationErrors = response.validationErrors;
+    throw error;
   }
   return response.data;
 }
@@ -33,6 +41,8 @@ export function App() {
   const [resetting, setResetting] = useState<StorageDiagnostic>();
   const [resetPending, setResetPending] = useState(false);
   const [resetError, setResetError] = useState<string>();
+  const [rangesDirty, setRangesDirty] = useState(false);
+  const [discardingFor, setDiscardingFor] = useState<View>();
   const panelFallback = useRef<HTMLElement>(null);
 
   async function load(): Promise<void> {
@@ -78,6 +88,16 @@ export function App() {
     );
   }
 
+  async function saveRanges(draft: string): Promise<string[]> {
+    const ranges = await request<string[]>({ type: "options/save-ranges", draft });
+    setState((current) =>
+      current.kind === "ready"
+        ? { kind: "ready", data: { ...current.data, ipRanges: ranges } }
+        : current,
+    );
+    return ranges;
+  }
+
   async function resetSection(): Promise<void> {
     if (resetting === undefined) return;
     setResetPending(true);
@@ -96,13 +116,21 @@ export function App() {
     }
   }
 
-  function activateTab(next: View): void {
+  function selectTab(next: View): void {
     setView(next);
     document.getElementById(`${next}-tab`)?.focus();
   }
 
+  function activateTab(next: View): void {
+    if (view === "ranges" && next !== "ranges" && rangesDirty) {
+      setDiscardingFor(next);
+      return;
+    }
+    selectTab(next);
+  }
+
   function handleTabKey(event: KeyboardEvent): void {
-    const tabs = ["warnings", "ignored", "activity"] as const;
+    const tabs = ["warnings", "ignored", "activity", "ranges"] as const;
     const index = tabs.indexOf(view);
     const next =
       event.key === "ArrowRight"
@@ -154,6 +182,7 @@ export function App() {
                 ["warnings", "Warnings"],
                 ["ignored", "Ignored sites"],
                 ["activity", "Activity"],
+                ["ranges", "IP ranges"],
               ] as const
             ).map(([id, label]) => (
               <button
@@ -165,7 +194,7 @@ export function App() {
                 aria-selected={view === id ? "true" : "false"}
                 tabIndex={view === id ? 0 : -1}
                 class={view === id ? "is-current" : undefined}
-                onClick={() => setView(id)}
+                onClick={() => activateTab(id)}
               >
                 {label}
               </button>
@@ -182,23 +211,20 @@ export function App() {
             {state.data.diagnostics.length > 0 ? (
               <section class="options__diagnostics" aria-label="Storage diagnostics">
                 {state.data.diagnostics.map((diagnostic) => {
-                  const resettable = (
-                    ["settings", "ignoreRules", "summaries"] as StorageSection[]
-                  ).includes(diagnostic.section);
                   return (
                     <div key={`${diagnostic.section}-${diagnostic.message}`}>
-                      <p role="alert">{diagnostic.message}</p>
-                      {resettable ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setResetError(undefined);
-                            setResetting(diagnostic);
-                          }}
-                        >
-                          Reset this section
-                        </button>
-                      ) : null}
+                      <p role="alert">
+                        <strong>{sectionLabel(diagnostic.section)}:</strong> {diagnostic.message}
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setResetError(undefined);
+                          setResetting(diagnostic);
+                        }}
+                      >
+                        Reset this section
+                      </button>
                     </div>
                   );
                 })}
@@ -213,6 +239,13 @@ export function App() {
             {view === "activity" ? (
               <ActivityView summaries={state.data.summaries} onClear={clearActivity} />
             ) : null}
+            {view === "ranges" ? (
+              <RangesView
+                ranges={state.data.ipRanges}
+                onDirtyChange={setRangesDirty}
+                onSave={saveRanges}
+              />
+            ) : null}
             {resetting === undefined ? null : (
               <ConfirmationDialog
                 labelledBy="reset-section-heading"
@@ -223,7 +256,12 @@ export function App() {
                 onConfirm={() => void resetSection()}
               >
                 <h3 id="reset-section-heading">
-                  Reset {resetting.section === "ignoreRules" ? "ignored sites" : resetting.section}
+                  Reset{" "}
+                  {resetting.section === "ignoreRules"
+                    ? "ignored sites"
+                    : resetting.section === "ipRanges"
+                      ? "IP ranges"
+                      : resetting.section}
                 </h3>
                 <p>This replaces the affected local settings with safe defaults.</p>
                 {resetError === undefined ? null : (
@@ -231,6 +269,24 @@ export function App() {
                     {resetError}
                   </p>
                 )}
+              </ConfirmationDialog>
+            )}
+            {discardingFor === undefined ? null : (
+              <ConfirmationDialog
+                labelledBy="discard-range-navigation-heading"
+                fallback={panelFallback}
+                confirmLabel="Discard changes"
+                pending={false}
+                onCancel={() => setDiscardingFor(undefined)}
+                onConfirm={() => {
+                  const next = discardingFor;
+                  setRangesDirty(false);
+                  setDiscardingFor(undefined);
+                  selectTab(next);
+                }}
+              >
+                <h3 id="discard-range-navigation-heading">Discard IP range changes</h3>
+                <p>Your unsaved IP range changes will be discarded.</p>
               </ConfirmationDialog>
             )}
           </section>

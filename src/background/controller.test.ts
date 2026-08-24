@@ -1304,7 +1304,11 @@ describe("BackgroundController messages and actions", () => {
     const operation = controller.handleMessage(scenario.request, {});
     await sendStarted.promise;
 
-    await expect(operation).resolves.toEqual({ ok: true, data: scenario.expectedData });
+    await expect(operation).resolves.toMatchObject({
+      ok: true,
+      data:
+        scenario.label === "reset" ? { settings: scenario.expectedData } : scenario.expectedData,
+    });
   });
 
   it("does not let a never-settling notice block same-tab navigation or settings state", async () => {
@@ -1695,7 +1699,7 @@ describe("BackgroundController messages and actions", () => {
     );
 
     await expect(Promise.all([resetting, saving])).resolves.toEqual([
-      { ok: true, data: [...DEFAULT_CIDRS] },
+      { ok: true, data: expect.objectContaining({ ipRanges: [...DEFAULT_CIDRS] }) },
       { ok: true, data: ["203.0.113.0/24"] },
     ]);
     expect((await repository.getOptionsSnapshot()).ipRanges).toEqual(["203.0.113.0/24"]);
@@ -1720,7 +1724,7 @@ describe("BackgroundController messages and actions", () => {
 
     await expect(Promise.all([saving, resetting])).resolves.toEqual([
       { ok: true, data: ["203.0.113.0/24"] },
-      { ok: true, data: [...DEFAULT_CIDRS] },
+      { ok: true, data: expect.objectContaining({ ipRanges: [...DEFAULT_CIDRS] }) },
     ]);
     expect((await repository.getOptionsSnapshot()).ipRanges).toEqual([...DEFAULT_CIDRS]);
     await controller.handleBeforeRequest(beforeRequest());
@@ -1732,6 +1736,27 @@ describe("BackgroundController messages and actions", () => {
       responseStarted({ responseHeaders: undefined, ip: "104.16.4.3" }),
     );
     expect(adapter.sent.at(-1)?.message.notice).toMatchObject({ kind: "direct" });
+  });
+
+  it("returns a fresh isolated snapshot after resetting corrupted IP ranges", async () => {
+    const { controller, repository } = await createHarness({
+      settings: { directNoticeMode: "off", contentNoticeMode: "banner" },
+      ignoreRules: [{ scope: "site", value: "example.com" }],
+      ranges: [],
+    });
+    await repository.recordDetection("example.com", "content", "2026-08-19T11:00:00.000Z");
+
+    await expect(
+      controller.handleMessage({ type: "options/reset-section", section: "ipRanges" }, {}),
+    ).resolves.toMatchObject({
+      ok: true,
+      data: {
+        settings: { directNoticeMode: "off", contentNoticeMode: "banner" },
+        ignoreRules: [{ scope: "site", value: "example.com" }],
+        ipRanges: [...DEFAULT_CIDRS],
+        summaries: { "example.com": expect.any(Object) },
+      },
+    });
   });
 
   it("clears persisted activity without changing detection state", async () => {
@@ -1756,16 +1781,16 @@ describe("BackgroundController messages and actions", () => {
 
     await expect(
       controller.handleMessage({ type: "options/reset-section", section: "settings" }, {}),
-    ).resolves.toEqual({ ok: true, data: DEFAULT_SETTINGS });
+    ).resolves.toMatchObject({ ok: true, data: { settings: DEFAULT_SETTINGS } });
     await expect(
       controller.handleMessage({ type: "options/reset-section", section: "ignoreRules" }, {}),
-    ).resolves.toEqual({ ok: true, data: [] });
+    ).resolves.toMatchObject({ ok: true, data: { ignoreRules: [] } });
     await expect(
       controller.handleMessage({ type: "options/reset-section", section: "ipRanges" }, {}),
-    ).resolves.toEqual({ ok: true, data: [...DEFAULT_CIDRS] });
+    ).resolves.toMatchObject({ ok: true, data: { ipRanges: [...DEFAULT_CIDRS] } });
     await expect(
       controller.handleMessage({ type: "options/reset-section", section: "summaries" }, {}),
-    ).resolves.toEqual({ ok: true, data: {} });
+    ).resolves.toMatchObject({ ok: true, data: { summaries: {} } });
 
     const snapshot = await repository.getOptionsSnapshot();
     expect(snapshot).toMatchObject({

@@ -112,7 +112,7 @@ describe("options loading and warnings", () => {
 });
 
 describe("options views", () => {
-  it("navigates between warnings, ignored sites, and activity", async () => {
+  it("navigates between warnings, ignored sites, activity, and IP ranges", async () => {
     const user = userEvent.setup();
     renderOptions();
     await screen.findByRole("heading", { name: "Warnings" });
@@ -121,7 +121,8 @@ describe("options views", () => {
     expect(await screen.findByRole("heading", { name: "Ignored sites" })).toBeVisible();
     await user.click(screen.getByRole("tab", { name: "Activity" }));
     expect(await screen.findByRole("heading", { name: "Activity" })).toBeVisible();
-    expect(screen.queryByRole("tab", { name: /IP ranges/i })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "IP ranges" }));
+    expect(await screen.findByRole("heading", { name: "IP ranges" })).toBeVisible();
   });
 
   it("uses roving keyboard tabs to move focus and activate the matching panel", async () => {
@@ -137,10 +138,49 @@ describe("options views", () => {
       "true",
     );
     await user.keyboard("{End}");
-    expect(screen.getByRole("tab", { name: "Activity" })).toHaveFocus();
-    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "activity-tab");
+    expect(screen.getByRole("tab", { name: "IP ranges" })).toHaveFocus();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "ranges-tab");
     await user.keyboard("{Home}");
     expect(warnings).toHaveFocus();
+  });
+
+  it("passes background CIDR line errors through to the range editor", async () => {
+    const user = userEvent.setup();
+    runtime.browser.runtime.sendMessage
+      .mockResolvedValueOnce(success(snapshot))
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "One or more CIDR ranges are invalid.",
+        validationErrors: [{ line: 1, input: "not-a-cidr", message: "Invalid CIDR" }],
+      });
+    render(<App />);
+
+    await user.click(await screen.findByRole("tab", { name: "IP ranges" }));
+    await user.type(screen.getByLabelText("CIDR ranges"), "not-a-cidr");
+    await user.click(screen.getByRole("button", { name: "Save IP ranges" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Line 1: not-a-cidr. Invalid CIDR");
+    expect(screen.getByLabelText("CIDR ranges")).toHaveAttribute(
+      "aria-describedby",
+      "range-errors",
+    );
+  });
+
+  it("warns before navigating away from dirty IP ranges", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    renderOptions();
+
+    await user.click(await screen.findByRole("tab", { name: "IP ranges" }));
+    await user.type(screen.getByLabelText("CIDR ranges"), "203.0.113.0/24");
+    await user.click(screen.getByRole("tab", { name: "Warnings" }));
+
+    expect(screen.getByRole("dialog", { name: "Discard IP range changes" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "IP ranges" })).toBeVisible();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Discard changes" }),
+    );
+    expect(await screen.findByRole("heading", { name: "Warnings" })).toBeVisible();
   });
 
   it("filters canonical ignored-rule labels and confirms removal", async () => {
@@ -303,7 +343,7 @@ describe("options recovery, accessibility, and visual contracts", () => {
     });
     expect(runtime.browser.runtime.sendMessage).toHaveBeenLastCalledWith({ type: "options/get" });
     await waitFor(() => expect(screen.getByRole("tabpanel")).toHaveFocus());
-    expect(screen.queryByRole("tab", { name: /IP ranges/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "IP ranges" })).toBeVisible();
   });
 
   it.each(["settings", "ignoreRules", "summaries"] as const)(
@@ -352,13 +392,32 @@ describe("options recovery, accessibility, and visual contracts", () => {
     expect(screen.getByRole("tabpanel")).toHaveFocus();
   });
 
-  it("keeps an IP ranges diagnostic informational", async () => {
-    renderOptions({
-      ...snapshot,
-      diagnostics: [{ section: "ipRanges", message: "Ranges need recovery." }],
+  it("resets only the range cache for an IP ranges diagnostic", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    runtime.browser.runtime.sendMessage
+      .mockResolvedValueOnce(
+        success({
+          ...snapshot,
+          diagnostics: [{ section: "ipRanges", message: "Ranges need recovery." }],
+        }),
+      )
+      .mockResolvedValueOnce(success(["173.245.48.0/20"]))
+      .mockResolvedValueOnce(success({ ...snapshot, diagnostics: [] }));
+    render(<App />);
+
+    expect(
+      within(await screen.findByLabelText("Storage diagnostics")).getByText("IP ranges:"),
+    ).toBeVisible();
+    await user.click(await screen.findByRole("button", { name: "Reset this section" }));
+    expect(screen.getByRole("dialog", { name: "Reset IP ranges" })).toBeVisible();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Reset section" }),
+    );
+    expect(runtime.browser.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "options/reset-section",
+      section: "ipRanges",
     });
-    expect(await screen.findByRole("alert")).toHaveTextContent("Ranges need recovery.");
-    expect(screen.queryByRole("button", { name: "Reset this section" })).not.toBeInTheDocument();
   });
 
   it.each([
@@ -392,6 +451,29 @@ describe("options recovery, accessibility, and visual contracts", () => {
     ).toEqual([]);
   });
 
+  it("has no serious or critical axe violations for range errors and a reset dialog", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    runtime.browser.runtime.sendMessage
+      .mockResolvedValueOnce(success(snapshot))
+      .mockResolvedValueOnce({
+        ok: false,
+        error: "One or more CIDR ranges are invalid.",
+        validationErrors: [{ line: 1, input: "not-a-cidr", message: "Invalid CIDR" }],
+      });
+    const { container } = render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "IP ranges" }));
+    await user.type(screen.getByLabelText("CIDR ranges"), "not-a-cidr");
+    await user.click(screen.getByRole("button", { name: "Save IP ranges" }));
+    await screen.findByRole("alert");
+    await user.click(screen.getByRole("button", { name: "Reset draft to defaults" }));
+
+    const results = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
+    expect(
+      results.violations.filter(({ impact }) => impact === "serious" || impact === "critical"),
+    ).toEqual([]);
+  });
+
   it("uses an adaptive rail, native-control sizing, dark mode, and reduced motion", () => {
     const css = readFileSync(resolve(process.cwd(), "src/entrypoints/options/style.css"), "utf8");
     const baseCss = readFileSync(resolve(process.cwd(), "src/ui/base.css"), "utf8");
@@ -403,7 +485,7 @@ describe("options recovery, accessibility, and visual contracts", () => {
     expect(css).toMatch(/min-height:\s*44px/);
     expect(css).toContain("@media (prefers-color-scheme: dark)");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
-    expect(css).toContain("repeating-linear-gradient");
+    expect(css).not.toContain("gradient");
     expect(baseCss).toContain("--cw-porcelain: oklch(0.985 0 0)");
     expect(html).toContain('<meta name="manifest.open_in_tab" content="true" />');
   });

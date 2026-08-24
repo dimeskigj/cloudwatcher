@@ -591,10 +591,12 @@ export class BackgroundController {
     }
   }
 
-  private async resetSection(section: StorageSection): Promise<unknown> {
+  private async resetSection(
+    section: StorageSection,
+  ): Promise<Awaited<ReturnType<LocalRepository["getOptionsSnapshot"]>>> {
     return this.enqueueConfiguration(async () => {
       const previousSettings = this.settings;
-      const replacement = await this.repository.resetSection(section);
+      await this.repository.resetSection(section);
       const snapshot = await this.repository.getOptionsSnapshot();
 
       switch (section) {
@@ -612,7 +614,7 @@ export class BackgroundController {
           break;
       }
 
-      return replacement;
+      return snapshot;
     });
   }
 
