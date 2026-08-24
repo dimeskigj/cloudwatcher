@@ -198,6 +198,28 @@ describe("options views", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("keeps ignored-rule removal open after failure and retries the same rule", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    runtime.browser.runtime.sendMessage
+      .mockResolvedValueOnce(success(snapshot))
+      .mockResolvedValueOnce({ ok: false, error: "Remove failed" })
+      .mockResolvedValueOnce(success([{ scope: "site", value: "example.org" }]));
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "Ignored sites" }));
+    await user.click(screen.getByRole("button", { name: "Remove cdn.example.com" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Remove rule" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Remove failed");
+    expect(screen.getByRole("dialog")).toBeVisible();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Remove rule" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByLabelText("Search ignored sites")).toHaveFocus();
+  });
+
   it("sorts local activity by most recent observation and confirms clearing", async () => {
     const user = userEvent.setup();
     runtime.browser.runtime.sendMessage
@@ -219,6 +241,27 @@ describe("options views", () => {
     expect(runtime.browser.runtime.sendMessage).toHaveBeenLastCalledWith({
       type: "options/clear-activity",
     });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.getByRole("heading", { name: "Activity" })).toHaveFocus();
+  });
+
+  it("keeps activity clear open after failure and retries", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    runtime.browser.runtime.sendMessage
+      .mockResolvedValueOnce(success(snapshot))
+      .mockResolvedValueOnce({ ok: false, error: "Clear failed" })
+      .mockResolvedValueOnce(success(undefined));
+    render(<App />);
+    await user.click(await screen.findByRole("tab", { name: "Activity" }));
+    await user.click(screen.getByRole("button", { name: "Clear all activity" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Clear activity" }),
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("Clear failed");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Clear activity" }),
+    );
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(screen.getByRole("heading", { name: "Activity" })).toHaveFocus();
   });
@@ -282,6 +325,32 @@ describe("options recovery, accessibility, and visual contracts", () => {
       });
     },
   );
+
+  it("keeps a reset dialog open after failure and retries to a clean snapshot", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    const broken = {
+      ...snapshot,
+      diagnostics: [{ section: "settings" as const, message: "Settings need recovery." }],
+    };
+    runtime.browser.runtime.sendMessage
+      .mockResolvedValueOnce(success(broken))
+      .mockResolvedValueOnce({ ok: false, error: "Reset failed" })
+      .mockResolvedValueOnce(success(undefined))
+      .mockResolvedValueOnce(success({ ...snapshot, diagnostics: [] }));
+    render(<App />);
+    await user.click(await screen.findByRole("button", { name: "Reset this section" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Reset section" }),
+    );
+    expect(screen.getAllByRole("alert").at(-1)).toHaveTextContent("Reset failed");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Reset section" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "Reset this section" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tabpanel")).toHaveFocus();
+  });
 
   it("keeps an IP ranges diagnostic informational", async () => {
     renderOptions({
