@@ -120,18 +120,18 @@ function hasRemoteImport(source) {
 function hasRemoteSource(path, source) {
   if (/\.html$/i.test(path)) {
     const document = new JSDOM(source).window.document;
-    return [...document.querySelectorAll("script")].some(
-      (script) => {
-        const type = script.getAttribute("type")?.trim().toLowerCase();
-        const executable =
-          !type || type === "module" || /^(?:application|text)\/(?:javascript|ecmascript)$/.test(type);
-        return (
-          executable &&
-          (remoteSource.test(script.getAttribute("src") ?? "") ||
-            hasRemoteImport(script.textContent ?? ""))
-        );
-      },
-    );
+    return [...document.querySelectorAll("script")].some((script) => {
+      const type = script.getAttribute("type")?.trim().toLowerCase();
+      const executable =
+        !type ||
+        type === "module" ||
+        /^(?:application|text)\/(?:javascript|ecmascript)$/.test(type);
+      return (
+        executable &&
+        (remoteSource.test(script.getAttribute("src") ?? "") ||
+          hasRemoteImport(script.textContent ?? ""))
+      );
+    });
   }
   return hasRemoteImport(source);
 }
