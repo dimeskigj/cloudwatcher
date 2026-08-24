@@ -8,6 +8,7 @@ import type { RuntimeResponse } from "../../core/messages";
 import type { OptionsSnapshot } from "../../core/model";
 
 const runtime = vi.hoisted(() => ({ browser: { runtime: { sendMessage: vi.fn() } } }));
+const dialogs = vi.hoisted(() => ({ close: vi.fn(), showModal: vi.fn() }));
 
 vi.mock("wxt/browser", () => ({ browser: runtime.browser }));
 vi.mock("#imports", () => ({ browser: runtime.browser }));
@@ -48,6 +49,23 @@ function renderOptions(data: OptionsSnapshot = snapshot) {
 afterEach(() => {
   vi.resetAllMocks();
 });
+
+function mockDialogs() {
+  dialogs.showModal.mockImplementation(function (this: HTMLDialogElement) {
+    this.setAttribute("open", "");
+  });
+  dialogs.close.mockImplementation(function (this: HTMLDialogElement) {
+    this.removeAttribute("open");
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, "showModal", {
+    configurable: true,
+    value: dialogs.showModal,
+  });
+  Object.defineProperty(HTMLDialogElement.prototype, "close", {
+    configurable: true,
+    value: dialogs.close,
+  });
+}
 
 describe("options loading and warnings", () => {
   it("loads settings into the warnings view", async () => {
@@ -106,6 +124,25 @@ describe("options views", () => {
     expect(screen.queryByRole("tab", { name: /IP ranges/i })).not.toBeInTheDocument();
   });
 
+  it("uses roving keyboard tabs to move focus and activate the matching panel", async () => {
+    const user = userEvent.setup();
+    renderOptions();
+    const warnings = await screen.findByRole("tab", { name: "Warnings" });
+    warnings.focus();
+
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Ignored sites" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Ignored sites" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.keyboard("{End}");
+    expect(screen.getByRole("tab", { name: "Activity" })).toHaveFocus();
+    expect(screen.getByRole("tabpanel")).toHaveAttribute("aria-labelledby", "activity-tab");
+    await user.keyboard("{Home}");
+    expect(warnings).toHaveFocus();
+  });
+
   it("filters canonical ignored-rule labels and confirms removal", async () => {
     const user = userEvent.setup();
     runtime.browser.runtime.sendMessage
@@ -115,7 +152,7 @@ describe("options views", () => {
     await screen.findByRole("heading", { name: "Warnings" });
     await user.click(screen.getByRole("tab", { name: "Ignored sites" }));
 
-    await user.type(screen.getByLabelText("Search ignored sites"), "cdn.example");
+    await user.type(screen.getByLabelText("Search ignored sites"), "  CDN.EXAMPLE  ");
     expect(screen.getByText("cdn.example.com")).toBeVisible();
     expect(screen.queryByText("example.org")).not.toBeInTheDocument();
     expect(screen.getByText("Exact host")).toBeVisible();
@@ -128,6 +165,21 @@ describe("options views", () => {
       type: "options/remove-ignore",
       rule: { scope: "host", value: "cdn.example.com" },
     });
+  });
+
+  it("uses native dialog lifecycle and restores the remove opener after cancel", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    renderOptions();
+    await screen.findByRole("heading", { name: "Warnings" });
+    await user.click(screen.getByRole("tab", { name: "Ignored sites" }));
+    const opener = screen.getByRole("button", { name: "Remove cdn.example.com" });
+    await user.click(opener);
+    expect(dialogs.showModal).toHaveBeenCalledOnce();
+    expect(screen.getByRole("dialog")).not.toHaveAttribute("aria-modal");
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    expect(dialogs.close).toHaveBeenCalledOnce();
+    expect(opener).toHaveFocus();
   });
 
   it("sorts local activity by most recent observation and confirms clearing", async () => {
@@ -166,14 +218,25 @@ describe("options views", () => {
 });
 
 describe("options recovery, accessibility, and visual contracts", () => {
-  it("shows storage diagnostics without offering the Task 10 range editor", async () => {
+  it("recovers Task 9 diagnostics with a confirmed reset and refreshed snapshot", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
     renderOptions({
       ...snapshot,
-      diagnostics: [{ section: "ipRanges", message: "Saved IP ranges need recovery." }],
+      diagnostics: [{ section: "settings", message: "Saved settings need recovery." }],
     });
 
-    expect(await screen.findByRole("alert")).toHaveTextContent("Saved IP ranges need recovery.");
-    expect(screen.queryByText(/Reset this section/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Saved settings need recovery.");
+    await user.click(screen.getByRole("button", { name: "Reset this section" }));
+    expect(screen.getByRole("dialog", { name: "Reset settings" })).toBeVisible();
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Reset section" }),
+    );
+    expect(runtime.browser.runtime.sendMessage).toHaveBeenCalledWith({
+      type: "options/reset-section",
+      section: "settings",
+    });
+    expect(runtime.browser.runtime.sendMessage).toHaveBeenLastCalledWith({ type: "options/get" });
     expect(screen.queryByRole("tab", { name: /IP ranges/i })).not.toBeInTheDocument();
   });
 
@@ -194,8 +257,23 @@ describe("options recovery, accessibility, and visual contracts", () => {
     },
   );
 
+  it("has no serious or critical axe violations for an active activity tab and clear dialog", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    const { container } = renderOptions();
+    await screen.findByRole("heading", { name: "Warnings" });
+    await user.click(screen.getByRole("tab", { name: "Activity" }));
+    await user.click(screen.getByRole("button", { name: "Clear all activity" }));
+
+    const results = await axe.run(container, { rules: { "color-contrast": { enabled: false } } });
+    expect(
+      results.violations.filter(({ impact }) => impact === "serious" || impact === "critical"),
+    ).toEqual([]);
+  });
+
   it("uses an adaptive rail, native-control sizing, dark mode, and reduced motion", () => {
     const css = readFileSync(resolve(process.cwd(), "src/entrypoints/options/style.css"), "utf8");
+    const baseCss = readFileSync(resolve(process.cwd(), "src/ui/base.css"), "utf8");
     const html = readFileSync(resolve(process.cwd(), "src/entrypoints/options/index.html"), "utf8");
 
     expect(css).not.toMatch(/#[\da-f]{3,8}\b|rgba?\(|hsla?\(/i);
@@ -204,6 +282,8 @@ describe("options recovery, accessibility, and visual contracts", () => {
     expect(css).toMatch(/min-height:\s*44px/);
     expect(css).toContain("@media (prefers-color-scheme: dark)");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(css).toContain("repeating-linear-gradient");
+    expect(baseCss).toContain("--cw-porcelain: oklch(0.985 0 0)");
     expect(html).toContain('<meta name="manifest.open_in_tab" content="true" />');
   });
 });

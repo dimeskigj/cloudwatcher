@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import type { DomainSummary } from "../../core/model";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 
 function formatTimestamp(timestamp: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
@@ -93,7 +94,13 @@ export function ActivityView({
         </div>
       ) : null}
       {confirming ? (
-        <dialog open aria-modal="true" aria-labelledby="clear-activity-heading">
+        <ConfirmationDialog
+          labelledBy="clear-activity-heading"
+          confirmLabel={pending ? "Clearing activity…" : "Clear activity"}
+          pending={pending}
+          onCancel={() => !pending && setConfirming(false)}
+          onConfirm={() => void clear()}
+        >
           <h3 id="clear-activity-heading">Clear local activity</h3>
           <p>This permanently removes local domain counts and observation times.</p>
           {error === undefined ? null : (
@@ -101,21 +108,7 @@ export function ActivityView({
               {error}
             </p>
           )}
-          <div class="options__dialog-actions">
-            <button type="button" disabled={pending} onClick={() => setConfirming(false)}>
-              Cancel
-            </button>
-            <button
-              class="options__primary"
-              type="button"
-              disabled={pending}
-              aria-busy={pending ? "true" : "false"}
-              onClick={() => void clear()}
-            >
-              {pending ? "Clearing activity…" : "Clear activity"}
-            </button>
-          </div>
-        </dialog>
+        </ConfirmationDialog>
       ) : null}
     </section>
   );

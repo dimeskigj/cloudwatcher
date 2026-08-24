@@ -64,6 +64,12 @@ body {
   display: grid;
   gap: 24px;
   padding: 24px 0 48px;
+  background-color: var(--cw-porcelain);
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0 31px,
+    oklch(0.8 0 0 / 0.42) 32px
+  );
 }
 .options__nav {
   display: flex;
@@ -273,6 +279,13 @@ body {
 }
 
 @media (prefers-color-scheme: dark) {
+  .options__workspace {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      transparent 0 31px,
+      oklch(0.36 0 0 / 0.5) 32px
+    );
+  }
   .options button:hover:not(:disabled),
   .options button.is-current {
     background: var(--cw-smoke);

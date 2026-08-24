@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import type { IgnoreRule } from "../../core/model";
+import { ConfirmationDialog } from "./ConfirmationDialog";
 
 function ruleLabel(rule: IgnoreRule): string {
   return rule.value;
@@ -16,7 +17,9 @@ export function IgnoredView({
   const [selected, setSelected] = useState<IgnoreRule>();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string>();
-  const matching = rules.filter((rule) => ruleLabel(rule).includes(query.trim().toLowerCase()));
+  const matching = rules.filter((rule) =>
+    ruleLabel(rule).trim().toLowerCase().includes(query.trim().toLowerCase()),
+  );
 
   async function remove(): Promise<void> {
     if (selected === undefined) return;
@@ -73,7 +76,13 @@ export function IgnoredView({
         ))}
       </ul>
       {selected === undefined ? null : (
-        <dialog open aria-modal="true" aria-labelledby="remove-rule-heading">
+        <ConfirmationDialog
+          labelledBy="remove-rule-heading"
+          confirmLabel={pending ? "Removing rule…" : "Remove rule"}
+          pending={pending}
+          onCancel={() => !pending && setSelected(undefined)}
+          onConfirm={() => void remove()}
+        >
           <h3 id="remove-rule-heading">Remove ignored site</h3>
           <p>
             Warnings for <code>{ruleLabel(selected)}</code> can appear again.
@@ -83,21 +92,7 @@ export function IgnoredView({
               {error}
             </p>
           )}
-          <div class="options__dialog-actions">
-            <button type="button" disabled={pending} onClick={() => setSelected(undefined)}>
-              Cancel
-            </button>
-            <button
-              class="options__primary"
-              type="button"
-              disabled={pending}
-              aria-busy={pending ? "true" : "false"}
-              onClick={() => void remove()}
-            >
-              {pending ? "Removing rule…" : "Remove rule"}
-            </button>
-          </div>
-        </dialog>
+        </ConfirmationDialog>
       )}
     </section>
   );
