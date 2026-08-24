@@ -30,7 +30,7 @@ const server = createServer((request, response) => {
     ...(path === "/direct" ? { "cf-ray": "fixture-ray" } : {}),
   });
   response.end(
-    `<!doctype html><html><head><style>#fixture-control { margin-top: 280px; }</style></head><body>${page}<script>document.querySelector('#fixture-control').addEventListener('click', () => document.body.dataset.clicked = 'true')</script></body></html>`,
+    `<!doctype html><html><head><style>#fixture-control { position: fixed; bottom: 16px; left: 16px; }</style></head><body>${page}<script>document.querySelector('#fixture-control').addEventListener('click', () => document.body.dataset.clicked = 'true')</script></body></html>`,
   );
 });
 

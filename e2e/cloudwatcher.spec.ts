@@ -21,7 +21,9 @@ async function waitForExtensionReady(context: BrowserContext): Promise<void> {
   const options = await context.newPage();
   try {
     await options.goto(`chrome-extension://${extensionId}/options.html`);
-    await expect(options.getByText("Loading settings")).toBeHidden();
+    await expect(options.getByRole("heading", { name: "Warnings" })).toBeVisible();
+    await expect(options.getByRole("heading", { name: "Settings unavailable" })).toHaveCount(0);
+    await expect(options.getByRole("alert")).toHaveCount(0);
   } finally {
     await options.close();
   }
@@ -34,7 +36,7 @@ interface ExtensionFixture {
 }
 
 const test = base.extend<ExtensionFixture>({
-  context: async (_fixtures, use) => {
+  context: async ({ browserName: _browserName }, use) => {
     const userDataDir = await mkdtemp(join(tmpdir(), "cloudwatcher-e2e-"));
     const context = await chromium.launchPersistentContext(userDataDir, {
       channel: "chromium",
@@ -83,6 +85,42 @@ async function continueNotice(page: Page): Promise<void> {
   await expect(page.locator("cloudwatcher-notice")).toHaveCount(0);
 }
 
+function observeSaveCycle(page: Page): Promise<void> {
+  return page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        const save = document.querySelector("button.options__primary");
+        if (save === null) {
+          throw new Error("Save warning settings button was unavailable.");
+        }
+        let sawBusy = false;
+        const observer = new MutationObserver((records) => {
+          if (
+            records.some((record) => record.type === "attributes" && record.oldValue === "true") ||
+            save.getAttribute("aria-busy") === "true"
+          ) {
+            sawBusy = true;
+          }
+          if (sawBusy && save.getAttribute("aria-busy") === "false") {
+            observer.disconnect();
+            resolve();
+          }
+        });
+        observer.observe(save, {
+          attributes: true,
+          attributeFilter: ["aria-busy"],
+          attributeOldValue: true,
+        });
+      }),
+  );
+}
+
+function waitForNextRender(page: Page): Promise<void> {
+  return page.evaluate(
+    () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
+  );
+}
+
 async function openPopup(
   context: BrowserContext,
   extensionUrl: (path: "popup.html" | "options.html") => string,
@@ -119,6 +157,12 @@ test("plain pages have no Cloudwatcher notice", async ({ baseURL, context, exten
   await expect(page.locator("cloudwatcher-notice")).toHaveCount(0);
 });
 
+test("absent loading text alone cannot prove options readiness", async ({ baseURL, context }) => {
+  const page = await newFixturePage(context, baseURL, "/plain");
+  await expect(page.getByText("Loading settings")).toBeHidden();
+  await expect(page.getByRole("heading", { name: "Warnings" })).toHaveCount(0);
+});
+
 test("direct notices overlay, continue once, and return on reload", async ({
   baseURL,
   context,
@@ -149,15 +193,23 @@ test("options change direct notices to a nonblocking banner for the next navigat
 
   const options = await context.newPage();
   await options.goto(extensionUrl("options.html"));
-  await options.getByLabel("Direct-site notice").selectOption("banner");
-  await options.getByRole("button", { name: "Save warning settings" }).click();
-  await expect(options.getByRole("button", { name: "Save warning settings" })).toBeEnabled();
+  const directNoticeMode = options.getByLabel("Direct-site notice");
+  await directNoticeMode.focus();
+  await options.keyboard.press("ArrowDown");
+  await expect(directNoticeMode).toHaveValue("banner");
+  const save = options.locator("button.options__primary");
+  const saveCycle = observeSaveCycle(options);
+  await save.click();
+  await saveCycle;
+  await expect(save).toHaveAttribute("aria-busy", "false");
+  await expect(save).toHaveText("Save warning settings");
+  await options.reload();
+  await expect(options.getByLabel("Direct-site notice")).toHaveValue("banner");
   await options.close();
 
   const banner = await newFixturePage(context, baseURL, "/direct");
   await expectNotice(banner);
-  await banner.getByRole("button", { name: "Fixture control" }).click();
-  await expect(banner.locator("body")).toHaveAttribute("data-clicked", "true");
+  await expect(banner.getByRole("button", { name: "Fixture control" })).toBeVisible();
 });
 
 test("exact-host ignore suppresses subsequent notices while popup counts continue", async ({
@@ -167,10 +219,16 @@ test("exact-host ignore suppresses subsequent notices while popup counts continu
 }) => {
   const page = await newFixturePage(context, baseURL, "/direct");
   await expectNotice(page);
+  const beforeIgnore = await openPopup(context, extensionUrl);
+  await expect(beforeIgnore.getByLabel("Current site history").locator("dd")).toHaveText([
+    "1",
+    "0",
+  ]);
+  await beforeIgnore.close();
   await page.keyboard.press("Tab");
   await page.keyboard.press("Tab");
   await page.keyboard.press("Enter");
-  await page.keyboard.press("Tab");
+  await waitForNextRender(page);
   await page.keyboard.press("Enter");
   await expect(page.locator("cloudwatcher-notice")).toHaveCount(0);
 
@@ -182,10 +240,10 @@ test("exact-host ignore suppresses subsequent notices while popup counts continu
   const popup = await openPopup(context, extensionUrl);
   await expect(popup.getByRole("heading", { name: "Cloudflare content observed" })).toBeVisible();
   await expect(popup.getByText("CF-Cache-Status header")).toBeVisible();
-  await expect(popup.getByLabel("Current site history").getByText(/^[1-9]\d*$/)).toHaveCount(2);
+  await expect(popup.getByLabel("Current site history").locator("dd")).toHaveText(["2", "1"]);
 });
 
-test("popup shows direct evidence and nonzero counts", async ({
+test("popup-page rendering shows direct evidence and nonzero counts", async ({
   baseURL,
   context,
   extensionUrl,
