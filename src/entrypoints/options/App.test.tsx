@@ -183,6 +183,21 @@ describe("options views", () => {
     expect(opener).toHaveFocus();
   });
 
+  it("handles a native cancel event like Escape and restores the remove opener", async () => {
+    mockDialogs();
+    const user = userEvent.setup();
+    renderOptions();
+    await screen.findByRole("heading", { name: "Warnings" });
+    await user.click(screen.getByRole("tab", { name: "Ignored sites" }));
+    const opener = screen.getByRole("button", { name: "Remove cdn.example.com" });
+    await user.click(opener);
+    screen
+      .getByRole("dialog")
+      .dispatchEvent(new Event("cancel", { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
+  });
+
   it("sorts local activity by most recent observation and confirms clearing", async () => {
     const user = userEvent.setup();
     runtime.browser.runtime.sendMessage
