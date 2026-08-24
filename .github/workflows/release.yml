@@ -50,5 +50,5 @@ jobs:
           gh release create "v${{ steps.version.outputs.version }}" \
             .output/cloudwatcher-*-chrome.zip \
             .output/cloudwatcher-*-firefox.zip \
-            --target HEAD \
+            --target main \
             --generate-notes
