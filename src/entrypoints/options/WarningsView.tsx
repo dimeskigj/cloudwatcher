@@ -40,9 +40,9 @@ export function WarningsView({
     <section aria-labelledby="warnings-heading">
       <h2 id="warnings-heading">Warnings</h2>
       <p class="options__intro">Disabled warnings still count detections in local activity.</p>
-      <div class="options__controls">
-        <label>
-          <span>Direct-site notice</span>
+      <div class="options__settings-ledger">
+        <fieldset class="options__setting-row">
+          <legend>Direct-site notice</legend>
           <select
             value={draft.directNoticeMode}
             aria-label="Direct-site notice"
@@ -59,10 +59,13 @@ export function WarningsView({
             <option value="banner">Banner</option>
             <option value="off">Off</option>
           </select>
-          <small>Blocks the page until you dismiss the notice.</small>
-        </label>
-        <label>
-          <span>Content notice</span>
+          <p class="options__setting-note">
+            Overlay blocks the page until you dismiss the notice. Banner is non-blocking. Off still
+            records activity locally.
+          </p>
+        </fieldset>
+        <fieldset class="options__setting-row">
+          <legend>Content notice</legend>
           <select
             value={draft.contentNoticeMode}
             aria-label="Content notice"
@@ -78,24 +81,27 @@ export function WarningsView({
             <option value="banner">Banner</option>
             <option value="off">Off</option>
           </select>
-          <small>Shows a compact notice without blocking the page.</small>
-          <small>Off shows no notice and still records activity locally.</small>
-        </label>
+          <p class="options__setting-note">
+            Banner is non-blocking. Off still records activity locally.
+          </p>
+        </fieldset>
       </div>
       {error === undefined ? null : (
         <p class="options__mutation-error" role="alert">
           {error}
         </p>
       )}
-      <button
-        class="options__primary"
-        type="button"
-        disabled={pending || saved}
-        aria-busy={pending ? "true" : "false"}
-        onClick={() => void save()}
-      >
-        {pending ? "Saving warning settings…" : saved ? "Saved" : "Save warning settings"}
-      </button>
+      <div class="options__completion-bar">
+        <button
+          class="options__primary"
+          type="button"
+          disabled={pending || saved}
+          aria-busy={pending ? "true" : "false"}
+          onClick={() => void save()}
+        >
+          {pending ? "Saving warning settings…" : saved ? "Saved" : "Save warning settings"}
+        </button>
+      </div>
     </section>
   );
 }
