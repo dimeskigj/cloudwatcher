@@ -87,11 +87,14 @@ describe("RangesView", () => {
     expect(await screen.findByText("Header-only detection is active.")).toBeVisible();
   });
 
-  it("imports valid text into only the draft", async () => {
+  it.each([
+    ["ranges.txt", "application/octet-stream"],
+    ["ranges", "text/plain"],
+  ])("imports accepted plain text into only the draft: %s", async (name, type) => {
     const onSave = vi.fn();
     render(<RangesView ranges={["203.0.113.0/24"]} onDirtyChange={vi.fn()} onSave={onSave} />);
     const input = screen.getByLabelText("Import IP ranges");
-    const file = new File(["198.51.100.0/24"], "ranges.txt", { type: "text/plain" });
+    const file = new File(["198.51.100.0/24"], name, { type });
     vi.spyOn(file, "text").mockResolvedValue("198.51.100.0/24");
 
     selectFile(input, file);
@@ -106,7 +109,7 @@ describe("RangesView", () => {
     render(<RangesView ranges={["203.0.113.0/24"]} onDirtyChange={vi.fn()} onSave={vi.fn()} />);
     const input = screen.getByLabelText("Import IP ranges");
 
-    selectFile(input, new File(["bad"], "ranges.csv", { type: "text/csv" }));
+    selectFile(input, new File(["bad"], "ranges.json", { type: "application/json" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Choose a plain-text .txt file.");
     expect(screen.getByLabelText("CIDR ranges")).toHaveValue("203.0.113.0/24");
 
@@ -115,6 +118,35 @@ describe("RangesView", () => {
     selectFile(input, unreadable);
     expect(await screen.findByRole("alert")).toHaveTextContent("Read failed");
     expect(screen.getByLabelText("CIDR ranges")).toHaveValue("203.0.113.0/24");
+  });
+
+  it("keeps the draft from the latest file selection when reads resolve out of order", async () => {
+    let resolveFirst: ((text: string) => void) | undefined;
+    let resolveSecond: ((text: string) => void) | undefined;
+    const first = new File([""], "first.txt", { type: "text/plain" });
+    const second = new File([""], "second.txt", { type: "text/plain" });
+    vi.spyOn(first, "text").mockImplementation(
+      () => new Promise<string>((resolve) => (resolveFirst = resolve)),
+    );
+    vi.spyOn(second, "text").mockImplementation(
+      () => new Promise<string>((resolve) => (resolveSecond = resolve)),
+    );
+    render(<RangesView ranges={[]} onDirtyChange={vi.fn()} onSave={vi.fn()} />);
+    const input = screen.getByLabelText("Import IP ranges");
+
+    selectFile(input, first);
+    selectFile(input, second);
+    if (resolveFirst === undefined || resolveSecond === undefined) {
+      throw new Error("Expected both file readers to start");
+    }
+    resolveSecond("198.51.100.0/24");
+    await waitFor(() =>
+      expect(screen.getByLabelText("CIDR ranges")).toHaveValue("198.51.100.0/24"),
+    );
+    resolveFirst("203.0.113.0/24");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(screen.getByLabelText("CIDR ranges")).toHaveValue("198.51.100.0/24");
   });
 
   it("exports the last saved ranges as a revoked UTF-8 object URL", async () => {

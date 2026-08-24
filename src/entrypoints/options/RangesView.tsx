@@ -24,6 +24,7 @@ export function RangesView({
   const [error, setError] = useState<string>();
   const [confirmation, setConfirmation] = useState<"discard" | "reset">();
   const heading = useRef<HTMLHeadingElement>(null);
+  const importToken = useRef(0);
 
   useEffect(() => {
     setDraft(savedText);
@@ -51,8 +52,9 @@ export function RangesView({
   }
 
   async function importFile(file: File | undefined): Promise<void> {
+    const token = ++importToken.current;
     if (file === undefined) return;
-    if (!file.name.endsWith(".txt") || (file.type !== "" && file.type !== "text/plain")) {
+    if (!file.name.toLowerCase().endsWith(".txt") && file.type !== "text/plain") {
       setErrors(undefined);
       setError("Choose a plain-text .txt file.");
       return;
@@ -60,10 +62,12 @@ export function RangesView({
 
     try {
       const text = await file.text();
+      if (token !== importToken.current) return;
       setDraft(text);
       setErrors(undefined);
       setError(undefined);
     } catch (cause) {
+      if (token !== importToken.current) return;
       setErrors(undefined);
       setError(cause instanceof Error ? cause.message : "Cloudwatcher could not read this file.");
     }

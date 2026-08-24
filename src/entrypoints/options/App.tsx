@@ -103,8 +103,10 @@ export function App() {
     setResetPending(true);
     setResetError(undefined);
     try {
-      await request<unknown>({ type: "options/reset-section", section: resetting.section });
-      const data = await request<OptionsSnapshot>({ type: "options/get" });
+      const data = await request<OptionsSnapshot>({
+        type: "options/reset-section",
+        section: resetting.section,
+      });
       setState({ kind: "ready", data });
       setResetting(undefined);
     } catch (error) {

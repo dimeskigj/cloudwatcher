@@ -318,7 +318,7 @@ describe("options views", () => {
 });
 
 describe("options recovery, accessibility, and visual contracts", () => {
-  it("recovers Task 9 diagnostics with a confirmed reset and refreshed snapshot", async () => {
+  it("uses the reset snapshot when a follow-up get would fail", async () => {
     mockDialogs();
     const user = userEvent.setup();
     const diagnosticSnapshot = {
@@ -327,8 +327,8 @@ describe("options recovery, accessibility, and visual contracts", () => {
     };
     runtime.browser.runtime.sendMessage
       .mockResolvedValueOnce(success(diagnosticSnapshot))
-      .mockResolvedValueOnce(success(undefined))
-      .mockResolvedValueOnce(success({ ...snapshot, diagnostics: [] }));
+      .mockResolvedValueOnce(success({ ...snapshot, diagnostics: [] }))
+      .mockResolvedValueOnce({ ok: false, error: "Follow-up get failed" });
     render(<App />);
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Saved settings need recovery.");
@@ -341,7 +341,8 @@ describe("options recovery, accessibility, and visual contracts", () => {
       type: "options/reset-section",
       section: "settings",
     });
-    expect(runtime.browser.runtime.sendMessage).toHaveBeenLastCalledWith({ type: "options/get" });
+    expect(runtime.browser.runtime.sendMessage).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("tabpanel")).toHaveFocus());
     expect(screen.getByRole("tab", { name: "IP ranges" })).toBeVisible();
   });
@@ -376,7 +377,6 @@ describe("options recovery, accessibility, and visual contracts", () => {
     runtime.browser.runtime.sendMessage
       .mockResolvedValueOnce(success(broken))
       .mockResolvedValueOnce({ ok: false, error: "Reset failed" })
-      .mockResolvedValueOnce(success(undefined))
       .mockResolvedValueOnce(success({ ...snapshot, diagnostics: [] }));
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "Reset this section" }));
@@ -402,8 +402,9 @@ describe("options recovery, accessibility, and visual contracts", () => {
           diagnostics: [{ section: "ipRanges", message: "Ranges need recovery." }],
         }),
       )
-      .mockResolvedValueOnce(success(["173.245.48.0/20"]))
-      .mockResolvedValueOnce(success({ ...snapshot, diagnostics: [] }));
+      .mockResolvedValueOnce(
+        success({ ...snapshot, ipRanges: ["173.245.48.0/20"], diagnostics: [] }),
+      );
     render(<App />);
 
     expect(
@@ -418,6 +419,10 @@ describe("options recovery, accessibility, and visual contracts", () => {
       type: "options/reset-section",
       section: "ipRanges",
     });
+    await user.click(screen.getByRole("tab", { name: "Ignored sites" }));
+    expect(await screen.findByText("cdn.example.com")).toBeVisible();
+    await user.click(screen.getByRole("tab", { name: "Warnings" }));
+    expect(screen.getByLabelText("Direct-site notice")).toHaveValue("overlay");
   });
 
   it.each([
