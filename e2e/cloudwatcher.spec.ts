@@ -193,9 +193,10 @@ test("options change direct notices to a nonblocking banner for the next navigat
 
   const options = await context.newPage();
   await options.goto(extensionUrl("options.html"));
+  await expect(options.getByRole("heading", { name: "Warnings" })).toBeVisible();
   const directNoticeMode = options.getByLabel("Direct-site notice");
-  await directNoticeMode.focus();
-  await options.keyboard.press("ArrowDown");
+  await directNoticeMode.selectOption("banner");
+  await directNoticeMode.dispatchEvent("input");
   await expect(directNoticeMode).toHaveValue("banner");
   const save = options.locator("button.options__primary");
   const saveCycle = observeSaveCycle(options);
@@ -209,7 +210,8 @@ test("options change direct notices to a nonblocking banner for the next navigat
 
   const banner = await newFixturePage(context, baseURL, "/direct");
   await expectNotice(banner);
-  await expect(banner.getByRole("button", { name: "Fixture control" })).toBeVisible();
+  await banner.getByRole("button", { name: "Fixture control" }).click();
+  await expect(banner.locator("body")).toHaveAttribute("data-clicked", "true");
 });
 
 test("exact-host ignore suppresses subsequent notices while popup counts continue", async ({
