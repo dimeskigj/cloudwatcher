@@ -82,3 +82,15 @@ Do not mark this matrix complete or record a passing release until every applica
 ## Known Limitations
 
 Detection can miss cached responses, responses with missing or altered Cloudflare headers, unavailable connected-IP metadata, and traffic outside the observed response path. Detection state is associated with the active tab and observed navigation, so rapid navigation, redirects, frames, restored tabs, and browser event ordering can temporarily associate metadata with a prior or incomplete navigation. Recheck these cases during release smoke testing when they are relevant to a change.
+
+## Dev Tool Audit Exception
+
+As of 2026-08-24, `npm audit` reports a high-severity denial-of-service advisory for `image-size@2.0.2` through the development-only `web-ext -> addons-linter -> image-size` chain. `npm audit --omit=dev` reports no production dependency vulnerabilities, and neither tool is shipped in the extension ZIPs. The exposure is limited to a developer or CI process linting an untrusted extension containing a crafted image.
+
+`web-ext@10.6.0`, `addons-linter@10.10.0`, and `image-size@2.0.2` are the latest available upstream versions; do not apply npm's incompatible downgrade proposal. This exception is accepted through 2026-11-22. Before that date, rerun `npm audit`, `npm audit --omit=dev`, and the upstream version checks, then upgrade or remove the chain when Mozilla publishes a compatible fix.
+
+## GitHub Automation
+
+Pull requests and pushes to `main` run the automated release commands, including V8 coverage, and retain the LCOV report plus Chrome and Firefox ZIPs as GitHub Actions artifacts. A successful `main` CI run calculates semantic versions from Conventional Commits: `feat:` creates a minor version, `fix:` and `perf:` create a patch version, and `BREAKING CHANGE:` creates a major version. It updates the package version, creates the GitHub release, and attaches both browser ZIPs without publishing to npm.
+
+GitHub automation does not replace the manual Firefox ESR and stable matrix above. Complete that matrix before making a release publicly available.

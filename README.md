@@ -35,11 +35,14 @@ source "$HOME/.nvm/nvm.sh"
 nvm use 26.7.0
 npm install
 npm run verify
+npm run test:coverage
 npm run test:e2e
 npm run package
 ```
 
 See [the release testing matrix](docs/TESTING.md) for the required manual Firefox ESR and stable testing before publishing.
+
+GitHub Actions runs these checks for pull requests and `main` updates, retaining LCOV coverage and browser ZIPs as workflow artifacts. Semantic GitHub releases are created after successful `main` CI runs: use Conventional Commits (`feat:`, `fix:`, `perf:`, or a `BREAKING CHANGE:` footer) to select the next version. Releases update the package version, create a GitHub release, and attach Chromium and Firefox ZIPs; Cloudwatcher is not published to npm.
 
 ## IP management
 
